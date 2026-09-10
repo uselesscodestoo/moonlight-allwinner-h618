@@ -24,7 +24,7 @@
 #include <libavutil/hwcontext_vaapi.h>
 #include <X11/Xlib.h>
 
-#define MAX_SURFACES 16
+#define MAX_SURFACES 6
 
 static AVBufferRef* device_ref;
 
@@ -66,6 +66,10 @@ int vaapi_init(AVCodecContext* decoder_ctx) {
   decoder_ctx->get_format = va_get_format;
   decoder_ctx->get_buffer2 = va_get_buffer;
   return 0;
+}
+
+int vaapi_transfer(AVFrame* dst, AVFrame* src) {
+  return av_hwframe_transfer_data(dst, src, 0);
 }
 
 void vaapi_queue(AVFrame* dec_frame, Window win, int width, int height) {

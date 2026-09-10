@@ -24,6 +24,8 @@
 #include "ffmpeg_vaapi.h"
 #endif
 
+#include <libswscale/swscale.h>
+
 #include "../input/x11.h"
 #include "../loop.h"
 #include "../util.h"
@@ -53,6 +55,13 @@ static int pipefd[2];
 static int display_width;
 static int display_height;
 
+#ifdef HAVE_VAAPI
+static AVFrame* vaapi_sw_nv12 = NULL;
+static AVFrame* vaapi_sw_yuv420p = NULL;
+static struct SwsContext* vaapi_sws = NULL;
+static int vaapi_sws_w, vaapi_sws_h;
+#endif
+
 static int frame_handle(int pipefd) {
   AVFrame* frame = NULL;
   while (read(pipefd, &frame, sizeof(void*)) > 0);
@@ -60,8 +69,41 @@ static int frame_handle(int pipefd) {
     if (ffmpeg_decoder == SOFTWARE)
       egl_draw(frame->data);
     #ifdef HAVE_VAAPI
-    else if (ffmpeg_decoder == VAAPI)
-      vaapi_queue(frame, window, display_width, display_height);
+    else if (ffmpeg_decoder == VAAPI) {
+      if (vaapi_sw_nv12 == NULL || vaapi_sw_nv12->width != frame->width ||
+          vaapi_sw_nv12->height != frame->height) {
+        av_frame_free(&vaapi_sw_nv12);
+        if (vaapi_sw_nv12 == NULL) {
+          vaapi_sw_nv12 = av_frame_alloc();
+          if (vaapi_sw_nv12 != NULL) {
+            vaapi_sw_nv12->format = AV_PIX_FMT_NV12;
+            vaapi_sw_nv12->width = frame->width;
+            vaapi_sw_nv12->height = frame->height;
+            av_frame_get_buffer(vaapi_sw_nv12, 32);
+          }
+        }
+      }
+      if (vaapi_sw_nv12 != NULL && vaapi_transfer(vaapi_sw_nv12, frame) == 0) {
+        if (vaapi_sws == NULL || vaapi_sws_w != frame->width ||
+            vaapi_sws_h != frame->height) {
+          if (vaapi_sws != NULL)
+            sws_freeContext(vaapi_sws);
+          vaapi_sws = sws_getContext(frame->width, frame->height,
+                                     AV_PIX_FMT_NV12,
+                                     frame->width, frame->height,
+                                     AV_PIX_FMT_YUV420P,
+                                     SWS_BILINEAR, NULL, NULL, NULL);
+          vaapi_sws_w = frame->width;
+          vaapi_sws_h = frame->height;
+        }
+        if (vaapi_sws != NULL) {
+          sws_scale(vaapi_sws, (const uint8_t* const*) vaapi_sw_nv12->data,
+                    vaapi_sw_nv12->linesize, 0, frame->height,
+                    vaapi_sw_yuv420p->data, vaapi_sw_yuv420p->linesize);
+          egl_draw(vaapi_sw_yuv420p->data);
+        }
+      }
+    }
     #endif
   }
 
@@ -135,8 +177,37 @@ int x11_setup(int videoFormat, int width, int height, int redrawRate, void* cont
     return -1;
   }
 
-  if (ffmpeg_decoder == SOFTWARE)
-    egl_init(display, window, width, height);
+  egl_init(display, window, width, height);
+
+  #ifdef HAVE_VAAPI
+  if (ffmpeg_decoder == VAAPI) {
+    vaapi_sw_nv12 = av_frame_alloc();
+    vaapi_sw_nv12->format = AV_PIX_FMT_NV12;
+    vaapi_sw_nv12->width = width;
+    vaapi_sw_nv12->height = height;
+    if (av_frame_get_buffer(vaapi_sw_nv12, 32) < 0) {
+      fprintf(stderr, "Couldn't allocate VAAPI download frame\n");
+      return -1;
+    }
+
+    vaapi_sw_yuv420p = av_frame_alloc();
+    vaapi_sw_yuv420p->format = AV_PIX_FMT_YUV420P;
+    vaapi_sw_yuv420p->width = width;
+    vaapi_sw_yuv420p->height = height;
+    if (av_frame_get_buffer(vaapi_sw_yuv420p, 32) < 0) {
+      fprintf(stderr, "Couldn't allocate VAAPI convert frame\n");
+      return -1;
+    }
+
+    vaapi_sws = sws_getContext(width, height, AV_PIX_FMT_NV12,
+                               width, height, AV_PIX_FMT_YUV420P,
+                               SWS_BILINEAR, NULL, NULL, NULL);
+    if (vaapi_sws == NULL) {
+      fprintf(stderr, "Couldn't create conversion context\n");
+      return -1;
+    }
+  }
+  #endif
 
   if (pipe(pipefd) == -1) {
     fprintf(stderr, "Can't create communication channel between threads\n");
@@ -161,6 +232,14 @@ int x11_setup_vaapi(int videoFormat, int width, int height, int redrawRate, void
 void x11_cleanup() {
   ffmpeg_destroy();
   egl_destroy();
+  #ifdef HAVE_VAAPI
+  if (vaapi_sw_yuv420p != NULL)
+    av_frame_free(&vaapi_sw_yuv420p);
+  if (vaapi_sw_nv12 != NULL)
+    av_frame_free(&vaapi_sw_nv12);
+  if (vaapi_sws != NULL)
+    sws_freeContext(vaapi_sws);
+  #endif
 }
 
 int x11_submit_decode_unit(PDECODE_UNIT decodeUnit) {

@@ -23,3 +23,4 @@
 int vaapi_init_lib();
 int vaapi_init(AVCodecContext* decoder_ctx);
 void vaapi_queue(AVFrame* dec_frame, Window win, int width, int height);
+int vaapi_transfer(AVFrame* dst, AVFrame* src);
