@@ -38,6 +38,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <time.h>
 #include <poll.h>
 
 #define X11_VDPAU_ACCELERATION ENABLE_HARDWARE_ACCELERATION_1
@@ -60,6 +61,53 @@ static AVFrame* vaapi_sw_nv12 = NULL;
 static AVFrame* vaapi_sw_yuv420p = NULL;
 static struct SwsContext* vaapi_sws = NULL;
 static int vaapi_sws_w, vaapi_sws_h;
+
+/* Temporary instrumentation: report which render path runs and the fps. */
+static double dbg_t0;
+static double dbg_last, dbg_cost_sum, dbg_cost_sum2, dbg_cost_sum3;
+static int dbg_frames;
+static char dbg_path_name[32];
+
+static double now_ms(void) {
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return ts.tv_sec * 1000.0 + ts.tv_nsec / 1000000.0;
+}
+
+static void dbg_note2(const char* label, int w, int h, double c1, double c2, double c3);
+
+static void dbg_note(const char* label, int w, int h, double cost_ms) {
+  dbg_note2(label, w, h, cost_ms, -1, -1);
+}
+
+static void dbg_note2(const char* label, int w, int h, double c1, double c2, double c3) {
+  if (dbg_path_name[0] == '\0' || strcmp(dbg_path_name, label) != 0) {
+    fprintf(stderr, "x11: render path -> %s\n", label);
+    strncpy(dbg_path_name, label, sizeof(dbg_path_name) - 1);
+    dbg_frames = 0;
+    dbg_t0 = now_ms();
+    dbg_last = dbg_t0;
+    dbg_cost_sum = 0;
+    dbg_cost_sum2 = 0;
+    dbg_cost_sum3 = 0;
+  }
+  dbg_frames++;
+  dbg_cost_sum += c1;
+  dbg_cost_sum2 += c2;
+  dbg_cost_sum3 += c3;
+  if (dbg_frames % 10 == 0) {
+    double now = now_ms();
+    double dt = now - dbg_t0;
+    double dfps = (now - dbg_last) > 0 ? 10000.0 / (now - dbg_last) : 0.0;
+    fprintf(stderr, "x11: %s frame=%d %dx%d avg_fps=%.1f delta_fps=%.1f c1=%.1fms c2=%.1fms c3=%.1fms\n",
+            label, dbg_frames, w, h, dt > 0 ? 1000.0 * dbg_frames / dt : 0.0,
+            dfps, dbg_cost_sum / 10.0, dbg_cost_sum2 / 10.0, dbg_cost_sum3 / 10.0);
+    dbg_last = now;
+    dbg_cost_sum = 0;
+    dbg_cost_sum2 = 0;
+    dbg_cost_sum3 = 0;
+  }
+}
 #endif
 
 static int frame_handle(int pipefd) {
@@ -70,6 +118,58 @@ static int frame_handle(int pipefd) {
       egl_draw(frame->data);
     #ifdef HAVE_VAAPI
     else if (ffmpeg_decoder == VAAPI) {
+      /* Debug switches: MOONLIGHT_NO_ZC=1 forces the download fallback,
+       * MOONLIGHT_NO_DRAW=1 drops frames without rendering. */
+      static int no_zc = -1, no_draw = -1;
+      static int zc_tiled = -1;
+      if (no_zc < 0) {
+        no_zc = getenv("MOONLIGHT_NO_ZC") != NULL;
+        no_draw = getenv("MOONLIGHT_NO_DRAW") != NULL;
+        /* The tiled de-tile shader is correct but far too expensive on
+         * Mali-G31 (measured ~200 ms/frame at 720p), so the download path is
+         * the better fallback for tiled capture.  Opt in for experiments. */
+        zc_tiled = getenv("MOONLIGHT_ZC_TILED") != NULL;
+      }
+      if (no_draw) {
+        dbg_note("drop", frame->width, frame->height, 0);
+        return LOOP_OK;
+      }
+
+      /* Zero-copy: hand the decoder's dma-buf straight to the GPU. */
+      VADRMPRIMESurfaceDescriptor* desc = NULL;
+      int zc_attempted = 0;
+      if (!no_zc) {
+        double t0 = now_ms();
+        int exp_rc = vaapi_export_dmabuf(frame, &desc);
+        double t1 = now_ms();
+        if (exp_rc == 0 && desc != NULL &&
+            desc->num_objects > 0 && desc->num_layers > 0) {
+          int rc;
+          zc_attempted = 1;
+          if (desc->objects[0].drm_format_modifier == 0)
+            /* Linear NV12 (V4L2_CAPTURE_FORMAT=nv12): import as native NV12. */
+            rc = egl_draw_dmabuf_nv12(desc->objects[0].fd, desc->objects[0].size,
+                                      frame->width, frame->height,
+                                      desc->layers[0].pitch[0],
+                                      desc->layers[0].offset[1]);
+          else if (zc_tiled)
+            /* Tiled NV12: import as R8 and de-tile in the shader. */
+            rc = egl_draw_dmabuf(desc->objects[0].fd, desc->objects[0].size,
+                                 frame->width, frame->height,
+                                 desc->layers[0].offset[1],
+                                 desc->layers[0].pitch[0]);
+          else
+            rc = -1;
+          if (rc == 0) {
+            dbg_note2("zero-copy", frame->width, frame->height, t1 - t0, now_ms() - t1, -1);
+            return LOOP_OK;
+          }
+        }
+        if (zc_attempted)
+          dbg_note2("zero-copy-failed", frame->width, frame->height, t1 - t0, now_ms() - t1, -1);
+      }
+
+      /* Fallback: download to system memory and render as planar YUV. */
       if (vaapi_sw_nv12 == NULL || vaapi_sw_nv12->width != frame->width ||
           vaapi_sw_nv12->height != frame->height) {
         av_frame_free(&vaapi_sw_nv12);
@@ -83,7 +183,9 @@ static int frame_handle(int pipefd) {
           }
         }
       }
+      double f0 = now_ms();
       if (vaapi_sw_nv12 != NULL && vaapi_transfer(vaapi_sw_nv12, frame) == 0) {
+        double f1 = now_ms();
         if (vaapi_sws == NULL || vaapi_sws_w != frame->width ||
             vaapi_sws_h != frame->height) {
           if (vaapi_sws != NULL)
@@ -97,10 +199,15 @@ static int frame_handle(int pipefd) {
           vaapi_sws_h = frame->height;
         }
         if (vaapi_sws != NULL) {
+          double f2 = now_ms();
           sws_scale(vaapi_sws, (const uint8_t* const*) vaapi_sw_nv12->data,
                     vaapi_sw_nv12->linesize, 0, frame->height,
                     vaapi_sw_yuv420p->data, vaapi_sw_yuv420p->linesize);
+          double f3 = now_ms();
           egl_draw(vaapi_sw_yuv420p->data);
+          double f4 = now_ms();
+          dbg_note2("fallback-download", frame->width, frame->height,
+                    f1 - f0, f3 - f2, f4 - f3);
         }
       }
     }

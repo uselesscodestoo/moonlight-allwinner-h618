@@ -18,9 +18,16 @@
  */
 
 #include <va/va.h>
+#include <va/va_drmcommon.h>
 #include <X11/Xlib.h>
 
 int vaapi_init_lib();
 int vaapi_init(AVCodecContext* decoder_ctx);
 void vaapi_queue(AVFrame* dec_frame, Window win, int width, int height);
 int vaapi_transfer(AVFrame* dst, AVFrame* src);
+
+/* Export a decoded VAAPI frame's backing buffer as a DRM PRIME dma-buf.
+ * Returns 0 on success and stores a cached descriptor in *desc.  The fds in
+ * the descriptor stay owned by this module. */
+int vaapi_export_dmabuf(AVFrame* dec_frame, VADRMPRIMESurfaceDescriptor** desc);
+void vaapi_export_reset(void);

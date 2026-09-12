@@ -19,10 +19,14 @@
 
 #include <va/va.h>
 #include <va/va_x11.h>
+#include <va/va_drmcommon.h>
 #include <libavcodec/avcodec.h>
 #include <libavutil/hwcontext.h>
 #include <libavutil/hwcontext_vaapi.h>
 #include <X11/Xlib.h>
+
+#include <string.h>
+#include <unistd.h>
 
 #define MAX_SURFACES 6
 
@@ -70,6 +74,59 @@ int vaapi_init(AVCodecContext* decoder_ctx) {
 
 int vaapi_transfer(AVFrame* dst, AVFrame* src) {
   return av_hwframe_transfer_data(dst, src, 0);
+}
+
+#define VAAPI_MAX_EXPORTS 64
+
+static struct {
+  VASurfaceID surface;
+  VADRMPRIMESurfaceDescriptor desc;
+} vaapi_exports[VAAPI_MAX_EXPORTS];
+static int vaapi_exports_count;
+
+void vaapi_export_reset(void) {
+  for (int i = 0; i < vaapi_exports_count; i++)
+    for (unsigned int j = 0; j < vaapi_exports[i].desc.num_objects; j++)
+      if (vaapi_exports[i].desc.objects[j].fd >= 0)
+        close(vaapi_exports[i].desc.objects[j].fd);
+  vaapi_exports_count = 0;
+}
+
+int vaapi_export_dmabuf(AVFrame* dec_frame, VADRMPRIMESurfaceDescriptor** desc) {
+  VASurfaceID surface = (VASurfaceID)(uintptr_t)dec_frame->data[3];
+  AVHWDeviceContext* device = (AVHWDeviceContext*) device_ref->data;
+  AVVAAPIDeviceContext* va_ctx = device->hwctx;
+  VAStatus st;
+  int i;
+
+  for (i = 0; i < vaapi_exports_count; i++) {
+    if (vaapi_exports[i].surface == surface) {
+      *desc = &vaapi_exports[i].desc;
+      return 0;
+    }
+  }
+
+  if (vaapi_exports_count >= VAAPI_MAX_EXPORTS) {
+    fprintf(stderr, "vaapi_export_dmabuf: export cache full\n");
+    return -1;
+  }
+
+  memset(&vaapi_exports[vaapi_exports_count].desc, 0,
+         sizeof(vaapi_exports[vaapi_exports_count].desc));
+
+  st = vaExportSurfaceHandle(va_ctx->display, surface,
+        VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2,
+        VA_EXPORT_SURFACE_READ_ONLY | VA_EXPORT_SURFACE_SEPARATE_LAYERS,
+        &vaapi_exports[vaapi_exports_count].desc);
+  if (st != VA_STATUS_SUCCESS) {
+    fprintf(stderr, "vaExportSurfaceHandle failed: %s\n", vaErrorStr(st));
+    return -1;
+  }
+
+  vaapi_exports[vaapi_exports_count].surface = surface;
+  *desc = &vaapi_exports[vaapi_exports_count].desc;
+  vaapi_exports_count++;
+  return 0;
 }
 
 void vaapi_queue(AVFrame* dec_frame, Window win, int width, int height) {

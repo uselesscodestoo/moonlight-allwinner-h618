@@ -21,4 +21,8 @@
 
 void egl_init(EGLNativeDisplayType native_display, NativeWindowType native_window, int display_width, int display_height);
 void egl_draw(uint8_t* image[3]);
+int egl_draw_dmabuf(int dmabuf_fd, unsigned int size, int frame_width, int frame_height,
+                    int uv_offset, int byte_pitch);
+int egl_draw_dmabuf_nv12(int dmabuf_fd, unsigned int size, int frame_width, int frame_height,
+                         int pitch, int uv_offset);
 void egl_destroy();
