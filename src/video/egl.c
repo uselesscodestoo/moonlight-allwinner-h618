@@ -288,9 +288,14 @@ void egl_init(EGLNativeDisplayType native_display, NativeWindowType native_windo
 
   surface = eglCreateWindowSurface(display, config, (NativeWindowType) native_window, NULL);
   eglMakeCurrent(display, surface, surface, context);
+  /* Swap interval defaults to 1 (wait for a buffer to come back from the
+   * server); MOONLIGHT_NO_VSYNC=1 unthrottles presentation for benchmarking. */
+  if (getenv("MOONLIGHT_NO_VSYNC"))
+    eglSwapInterval(display, 0);
   fprintf(stderr, "EGL: renderer=%s version=%s GLSL=%s surface=%dx%d\n",
           glGetString(GL_RENDERER), glGetString(GL_VERSION),
           glGetString(GL_SHADING_LANGUAGE_VERSION), width, height);
+  fprintf(stderr, "EGL: vsync=%s\n", getenv("MOONLIGHT_NO_VSYNC") ? "off" : "on");
 
   GLuint vbo;
   glGenBuffers(1, &vbo);

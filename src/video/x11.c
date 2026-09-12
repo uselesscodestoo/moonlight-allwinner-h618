@@ -32,6 +32,12 @@
 
 #include <X11/Xatom.h>
 #include <X11/Xutil.h>
+#ifdef HAVE_DPMS
+#include <X11/extensions/dpms.h>
+#endif
+#ifdef HAVE_XSS
+#include <X11/extensions/scrnsaver.h>
+#endif
 
 #include <stdbool.h>
 #include <stdio.h>
@@ -115,6 +121,37 @@ static void dbg_note2(const char* label, int w, int h, double c1, double c2, dou
   }
 }
 #endif
+
+
+/* A DPMS-off CRTC (blanked monitor) makes an EGL swap of a 1920x1080 buffer
+ * cost ~750 ms instead of ~2 ms, which throttles streaming to ~1 fps, so keep
+ * the output awake for as long as we are displaying. */
+static void display_inhibit_blanking(Display* dpy, Bool inhibit) {
+  int event_base, error_base;
+
+  if (dpy == NULL)
+    return;
+
+  if (inhibit)
+    XResetScreenSaver(dpy);
+
+#ifdef HAVE_DPMS
+  if (DPMSQueryExtension(dpy, &event_base, &error_base)) {
+    if (inhibit)
+      DPMSDisable(dpy);
+    else
+      DPMSEnable(dpy);
+  }
+#endif
+#ifdef HAVE_XSS
+  if (XScreenSaverQueryExtension(dpy, &event_base, &error_base))
+    XScreenSaverSuspend(dpy, inhibit);
+#else
+  (void) event_base;
+  (void) error_base;
+#endif
+  XFlush(dpy);
+}
 
 static int frame_handle(int pipefd) {
   AVFrame* frame = NULL;
@@ -255,6 +292,8 @@ int x11_setup(int videoFormat, int width, int height, int redrawRate, void* cont
   }
 
   Window root = DefaultRootWindow(display);
+  display_inhibit_blanking(display, True);
+
   XSetWindowAttributes winattr = { .event_mask = PointerMotionMask | ButtonPressMask | ButtonReleaseMask | KeyPressMask | KeyReleaseMask };
   window = XCreateWindow(display, root, 0, 0, display_width, display_height, 0, CopyFromParent, InputOutput, CopyFromParent, CWEventMask, &winattr);
   XMapWindow(display, window);
@@ -343,6 +382,8 @@ int x11_setup_vaapi(int videoFormat, int width, int height, int redrawRate, void
 }
 
 void x11_cleanup() {
+  display_inhibit_blanking(display, False);
+
   ffmpeg_destroy();
   egl_destroy();
   #ifdef HAVE_VAAPI
