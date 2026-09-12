@@ -37,6 +37,7 @@
 #include <sys/mman.h>
 #include <linux/dma-heap.h>
 #include <X11/Xlib.h>
+#include <X11/Xatom.h>
 
 #include "video/egl.h"
 
@@ -92,8 +93,26 @@ int main(int argc, char** argv) {
   Window win = XCreateSimpleWindow(dpy, DefaultRootWindow(dpy), 0, 0, width, height, 0, 0, 0);
   XStoreName(dpy, win, "egl_bench");
   XMapWindow(dpy, win);
+
+  /* Ask the window manager to make this fullscreen: xfwm4 (and other
+   * compositors) unredirect fullscreen windows, which is what the streaming
+   * client's window is, and the difference is large (3-10x) because an
+   * overlapping window has to go through the compositor every frame. */
+  {
+    Atom wm_state = XInternAtom(dpy, "_NET_WM_STATE", False);
+    Atom fullscreen = XInternAtom(dpy, "_NET_WM_STATE_FULLSCREEN", False);
+    XEvent xev = {0};
+    xev.type = ClientMessage;
+    xev.xclient.window = win;
+    xev.xclient.message_type = wm_state;
+    xev.xclient.format = 32;
+    xev.xclient.data.l[0] = 1;
+    xev.xclient.data.l[1] = fullscreen;
+    XSendEvent(dpy, DefaultRootWindow(dpy), False,
+               SubstructureRedirectMask | SubstructureNotifyMask, &xev);
+  }
   XFlush(dpy);
-  usleep(300000);
+  usleep(500000);
 
   egl_init(dpy, (NativeWindowType) win, width, height);
 
