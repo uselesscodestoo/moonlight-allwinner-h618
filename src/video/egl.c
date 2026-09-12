@@ -259,6 +259,115 @@ static void upload_color_params(const GLint* u) {
   glUniform1f(u[5], color_bu);
 }
 
+
+/* Unit test for the YCbCr -> RGB conversion: feed known limited-range BT.601
+ * triples through the very same shader the stream path uses (one R8 texture
+ * holding a luma plane followed by an interleaved chroma plane) and compare
+ * the rendered pixels against the standard's expected RGB.  Enabled with
+ * MOONLIGHT_COLOR_SELFTEST=1; runs once, before the first stream frame. */
+static void color_selftest(void) {
+  static const struct {
+    const char* name;
+    unsigned char y, u, v;
+    int r, g, b;
+  } cases[] = {
+    { "limited white", 235, 128, 128, 255, 255, 255 },
+    { "limited black",  16, 128, 128,   0,   0,   0 },
+    { "limited grey",  126, 128, 128, 128, 128, 128 },
+    { "red",            81,  90, 240, 255,   0,   0 },
+    { "green",         145,  54,  34,   0, 255,   1 },
+    { "blue",           41, 240, 110,   0,   0, 255 },
+  };
+  const int w = 4, h = 4;
+  unsigned char plane[4 * 6];
+  unsigned char pixels[4 * 4 * 4];
+  GLuint tex, fbo, rbo;
+  int failures = 0;
+  unsigned int c;
+
+  if (!nv12_program)
+    return;
+
+  glGenTextures(1, &tex);
+  glGenFramebuffers(1, &fbo);
+  glGenRenderbuffers(1, &rbo);
+
+  glBindRenderbuffer(GL_RENDERBUFFER, rbo);
+  glRenderbufferStorage(GL_RENDERBUFFER, GL_RGBA8, w, h);
+  glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+  glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, rbo);
+  if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+    fprintf(stderr, "SELFTEST: framebuffer incomplete, skipped\n");
+    goto out;
+  }
+
+  glUseProgram(nv12_program);
+  glActiveTexture(GL_TEXTURE0);
+  glBindTexture(GL_TEXTURE_2D, tex);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+  glUniform1i(nv12_uniforms[0], 0);
+  glUniform1i(nv12_uniforms[1], h);      /* u_uv_row */
+  glUniform1i(nv12_uniforms[2], w);      /* u_frame_w */
+  glUniform1i(nv12_uniforms[3], h);      /* u_frame_h */
+  glUniform1i(nv12_uniforms[4], w);      /* u_view_w  */
+  glUniform1i(nv12_uniforms[5], h);      /* u_view_h  */
+  glUniform1i(nv12_trivial_uniform, 0);
+  upload_color_params(nv12_color_uniforms);
+
+  glViewport(0, 0, w, h);
+  glDisable(GL_BLEND);
+  glDisableVertexAttribArray(0);
+
+  /* Limited-range BT.601, the coefficients the caller installs for a stream
+   * that declares smpte170m. */
+  egl_set_color_params(1.164383f, 16.0f / 255.0f, 1.596027f, 0.391762f, 0.812968f, 2.017232f);
+  upload_color_params(nv12_color_uniforms);
+
+  fprintf(stderr, "SELFTEST: limited-range BT.601 conversion (frame %dx%d)\n", w, h);
+
+  for (c = 0; c < sizeof(cases) / sizeof(cases[0]); c++) {
+    int x, y, i, ok = 1;
+
+    for (y = 0; y < h; y++)
+      for (x = 0; x < w; x++)
+        plane[y * w + x] = cases[c].y;
+    for (y = 0; y < h; y++) {           /* 2 chroma rows, interleaved U/V */
+      for (x = 0; x < w; x++)
+        plane[(h + y) * w + x] = (x & 1) ? cases[c].v : cases[c].u;
+    }
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, w, h * 2, 0, GL_RED, GL_UNSIGNED_BYTE, plane);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+
+    for (i = 0; i < w * h; i++) {
+      int r = pixels[i * 4 + 0], g = pixels[i * 4 + 1], b = pixels[i * 4 + 2];
+      if (abs(r - cases[c].r) > 3 || abs(g - cases[c].g) > 3 || abs(b - cases[c].b) > 3) {
+        fprintf(stderr, "SELFTEST: %s Y=%u U=%u V=%u -> got (%d,%d,%d), expected (%d,%d,%d)\n",
+                cases[c].name, cases[c].y, cases[c].u, cases[c].v, r, g, b,
+                cases[c].r, cases[c].g, cases[c].b);
+        ok = 0;
+        break;
+      }
+    }
+    if (ok)
+      fprintf(stderr, "SELFTEST: %-14s OK\n", cases[c].name);
+    else
+      failures++;
+  }
+
+  glBindFramebuffer(GL_FRAMEBUFFER, 0);
+  fprintf(stderr, "SELFTEST: %s\n", failures ? "FAILED" : "PASSED");
+
+out:
+  glDeleteRenderbuffers(1, &rbo);
+  glDeleteFramebuffers(1, &fbo);
+  glDeleteTextures(1, &tex);
+  glViewport(0, 0, width, height);
+}
+
 static GLuint compile_program(const char* vs_src, const char* fs_src, const char* name) {
   GLuint vs = glCreateShader(GL_VERTEX_SHADER);
   GLuint fs = glCreateShader(GL_FRAGMENT_SHADER);
@@ -420,6 +529,9 @@ void egl_init(EGLNativeDisplayType native_display, NativeWindowType native_windo
     fprintf(stderr, "EGL: dmabuf import extensions unavailable\n");
     dmabuf_program = 0;
   }
+
+  if (getenv("MOONLIGHT_COLOR_SELFTEST"))
+    color_selftest();
 
   eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
   current = false;
