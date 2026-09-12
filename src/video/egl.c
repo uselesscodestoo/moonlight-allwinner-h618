@@ -60,15 +60,22 @@ precision mediump float;\n\
 uniform lowp sampler2D ymap;\n\
 uniform lowp sampler2D umap;\n\
 uniform lowp sampler2D vmap;\n\
+uniform float u_yscale;\n\
+uniform float u_yoff;\n\
+uniform float u_rv;\n\
+uniform float u_gu;\n\
+uniform float u_gv;\n\
+uniform float u_bu;\n\
 in mediump vec2 tex_position;\n\
 out lowp vec4 fragColor;\n\
 void main() {\n\
   mediump float y = texture(ymap, tex_position).r;\n\
-  mediump float u = texture(umap, tex_position).r - .5;\n\
-  mediump float v = texture(vmap, tex_position).r - .5;\n\
-  lowp float r = y + 1.28033 * v;\n\
-  lowp float g = y - .21482 * u - .38059 * v;\n\
-  lowp float b = y + 2.12798 * u;\n\
+  mediump float u = texture(umap, tex_position).r - 128.0 / 255.0;\n\
+  mediump float v = texture(vmap, tex_position).r - 128.0 / 255.0;\n\
+  mediump float yp = (y - u_yoff) * u_yscale;\n\
+  lowp float r = yp + u_rv * v;\n\
+  lowp float g = yp - u_gu * u - u_gv * v;\n\
+  lowp float b = yp + u_bu * u;\n\
   fragColor = vec4(r, g, b, 1.0);\n\
 }\n";
 
@@ -95,6 +102,12 @@ uniform int u_frame_h;\n\
 uniform int u_view_w;\n\
 uniform int u_view_h;\n\
 uniform int u_trivial;\n\
+uniform float u_yscale;\n\
+uniform float u_yoff;\n\
+uniform float u_rv;\n\
+uniform float u_gu;\n\
+uniform float u_gv;\n\
+uniform float u_bu;\n\
 layout(location = 0) out vec4 outColor;\n\
 int tiled_offset(int bc, int br) {\n\
   int band = br >> 5;\n\
@@ -124,12 +137,12 @@ void main() {\n\
   float Y = fetch_plane(0, x, y);\n\
   float U = fetch_plane(u_uv_offset, 2 * cx, cy);\n\
   float V = fetch_plane(u_uv_offset, 2 * cx + 1, cy);\n\
-  float Yp = (Y - 16.0 / 255.0) * 1.164383;\n\
+  float Yp = (Y - u_yoff) * u_yscale;\n\
   float Up = U - 128.0 / 255.0;\n\
   float Vp = V - 128.0 / 255.0;\n\
-  vec3 rgb = vec3(Yp + 1.792741 * Vp,\n\
-                  Yp - 0.213249 * Up - 0.532909 * Vp,\n\
-                  Yp + 2.112402 * Up);\n\
+  vec3 rgb = vec3(Yp + u_rv * Vp,\n\
+                  Yp - u_gu * Up - u_gv * Vp,\n\
+                  Yp + u_bu * Up);\n\
   outColor = vec4(clamp(rgb, 0.0, 1.0), 1.0);\n\
 }\n";
 
@@ -149,6 +162,12 @@ uniform int u_frame_h;\n\
 uniform int u_view_w;\n\
 uniform int u_view_h;\n\
 uniform int u_trivial;\n\
+uniform float u_yscale;\n\
+uniform float u_yoff;\n\
+uniform float u_rv;\n\
+uniform float u_gu;\n\
+uniform float u_gv;\n\
+uniform float u_bu;\n\
 layout(location = 0) out vec4 outColor;\n\
 void main() {\n\
   if (u_trivial != 0) { outColor = vec4(0.2, 0.4, 0.6, 1.0); return; }\n\
@@ -163,12 +182,12 @@ void main() {\n\
   float Y = texelFetch(u_tex, ivec2(x, y), 0).r;\n\
   float U = texelFetch(u_tex, ivec2(2 * cx, u_uv_row + cy), 0).r;\n\
   float V = texelFetch(u_tex, ivec2(2 * cx + 1, u_uv_row + cy), 0).r;\n\
-  float Yp = (Y - 16.0 / 255.0) * 1.164383;\n\
+  float Yp = (Y - u_yoff) * u_yscale;\n\
   float Up = U - 128.0 / 255.0;\n\
   float Vp = V - 128.0 / 255.0;\n\
-  vec3 rgb = vec3(Yp + 1.792741 * Vp,\n\
-                  Yp - 0.213249 * Up - 0.532909 * Vp,\n\
-                  Yp + 2.112402 * Up);\n\
+  vec3 rgb = vec3(Yp + u_rv * Vp,\n\
+                  Yp - u_gu * Up - u_gv * Vp,\n\
+                  Yp + u_bu * Up);\n\
   outColor = vec4(clamp(rgb, 0.0, 1.0), 1.0);\n\
 }\n";
 
@@ -203,8 +222,17 @@ static GLuint dmabuf_program;
 static GLuint nv12_program;
 static GLint nv12_uniforms[6];
 static GLint nv12_trivial_uniform;
+static GLint nv12_color_uniforms[6];
+
+/* YCbCr -> RGB conversion coefficients, set from the stream's own metadata
+ * (HEVC VUI) by the caller; defaults to limited-range BT.601, which is what
+ * Sunshine/NVENC desktop capture actually tags. */
+static float color_yscale = 1.164383f, color_yoff = 16.0f / 255.0f;
+static float color_rv = 1.596027f, color_gu = 0.391762f;
+static float color_gv = 0.812968f, color_bu = 2.017232f;
+static GLint sw_color_uniforms[6];
 static GLuint dmabuf_texture;
-static GLint dmabuf_uniforms[9];
+static GLint dmabuf_uniforms[15];
 static int dmabuf_trivial;
 static struct {
   int fd;
@@ -212,6 +240,24 @@ static struct {
 } dmabuf_images[DMABUF_MAX_IMAGES];
 static int dmabuf_images_count;
 static int dmabuf_last_w, dmabuf_last_h;
+
+void egl_set_color_params(float yscale, float yoff, float rv, float gu, float gv, float bu) {
+  color_yscale = yscale;
+  color_yoff = yoff;
+  color_rv = rv;
+  color_gu = gu;
+  color_gv = gv;
+  color_bu = bu;
+}
+
+static void upload_color_params(const GLint* u) {
+  glUniform1f(u[0], color_yscale);
+  glUniform1f(u[1], color_yoff);
+  glUniform1f(u[2], color_rv);
+  glUniform1f(u[3], color_gu);
+  glUniform1f(u[4], color_gv);
+  glUniform1f(u[5], color_bu);
+}
 
 static GLuint compile_program(const char* vs_src, const char* fs_src, const char* name) {
   GLuint vs = glCreateShader(GL_VERTEX_SHADER);
@@ -244,6 +290,16 @@ static GLuint compile_program(const char* vs_src, const char* fs_src, const char
   glLinkProgram(prog);
   glDeleteShader(vs);
   glDeleteShader(fs);
+
+  ok = 0;
+  glGetProgramiv(prog, GL_LINK_STATUS, &ok);
+  if (!ok) {
+    char log[2048];
+    glGetProgramInfoLog(prog, sizeof(log), NULL, log);
+    fprintf(stderr, "EGL: %s program link failed:\n%s\n", name, log);
+    return 0;
+  }
+
   return prog;
 }
 
@@ -320,6 +376,11 @@ void egl_init(EGLNativeDisplayType native_display, NativeWindowType native_windo
     glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, i > 0 ? width / 2 : width, i > 0 ? height / 2 : height, 0, GL_RED, GL_UNSIGNED_BYTE, 0);
     texture_uniform[i] = glGetUniformLocation(shader_program, texture_mappings[i]);
   }
+  {
+    static const char* names[6] = { "u_yscale", "u_yoff", "u_rv", "u_gu", "u_gv", "u_bu" };
+    for (int i = 0; i < 6; i++)
+      sw_color_uniforms[i] = glGetUniformLocation(shader_program, names[i]);
+  }
 
   p_eglCreateImageKHR = (PFNEGLCREATEIMAGEKHRPROC)eglGetProcAddress("eglCreateImageKHR");
   p_eglDestroyImageKHR = (PFNEGLDESTROYIMAGEKHRPROC)eglGetProcAddress("eglDestroyImageKHR");
@@ -335,7 +396,10 @@ void egl_init(EGLNativeDisplayType native_display, NativeWindowType native_windo
     dmabuf_uniforms[5] = glGetUniformLocation(dmabuf_program, "u_frame_h");
     dmabuf_uniforms[6] = glGetUniformLocation(dmabuf_program, "u_view_w");
     dmabuf_uniforms[7] = glGetUniformLocation(dmabuf_program, "u_view_h");
+    static const char* cnames[6] = { "u_yscale", "u_yoff", "u_rv", "u_gu", "u_gv", "u_bu" };
     dmabuf_uniforms[8] = glGetUniformLocation(dmabuf_program, "u_trivial");
+    for (int i = 0; i < 6; i++)
+      dmabuf_uniforms[9 + i] = glGetUniformLocation(dmabuf_program, cnames[i]);
     dmabuf_trivial = getenv("MOONLIGHT_ZC_TRIVIAL") != NULL;
     glGenTextures(1, &dmabuf_texture);
 
@@ -347,6 +411,11 @@ void egl_init(EGLNativeDisplayType native_display, NativeWindowType native_windo
     nv12_uniforms[4] = glGetUniformLocation(nv12_program, "u_view_w");
     nv12_uniforms[5] = glGetUniformLocation(nv12_program, "u_view_h");
     nv12_trivial_uniform = glGetUniformLocation(nv12_program, "u_trivial");
+    {
+      static const char* cnames[6] = { "u_yscale", "u_yoff", "u_rv", "u_gu", "u_gv", "u_bu" };
+      for (int i = 0; i < 6; i++)
+        nv12_color_uniforms[i] = glGetUniformLocation(nv12_program, cnames[i]);
+    }
   } else {
     fprintf(stderr, "EGL: dmabuf import extensions unavailable\n");
     dmabuf_program = 0;
@@ -367,6 +436,8 @@ void egl_draw(uint8_t* image[3]) {
   glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, index_ebo);
   glEnableVertexAttribArray(0);
   glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(GLfloat), 0);
+
+  upload_color_params(sw_color_uniforms);
 
   for (int i = 0; i < 3; i++) {
     glActiveTexture(GL_TEXTURE0 + i);
@@ -473,6 +544,7 @@ int egl_draw_dmabuf(int dmabuf_fd, unsigned int size, int frame_width, int frame
   glUniform1i(dmabuf_uniforms[6], surf_w);
   glUniform1i(dmabuf_uniforms[7], surf_h);
   glUniform1i(dmabuf_uniforms[8], dmabuf_trivial);
+  upload_color_params(&dmabuf_uniforms[9]);
 
   {
     static int dbg_shown;
@@ -548,6 +620,7 @@ int egl_draw_dmabuf_nv12(int dmabuf_fd, unsigned int size, int frame_width, int 
   glUniform1i(nv12_uniforms[4], surf_w);
   glUniform1i(nv12_uniforms[5], surf_h);
   glUniform1i(nv12_trivial_uniform, dmabuf_trivial);
+  upload_color_params(nv12_color_uniforms);
 
   {
     static int dbg_shown;

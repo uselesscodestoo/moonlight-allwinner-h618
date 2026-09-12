@@ -25,4 +25,7 @@ int egl_draw_dmabuf(int dmabuf_fd, unsigned int size, int frame_width, int frame
                     int uv_offset, int byte_pitch);
 int egl_draw_dmabuf_nv12(int dmabuf_fd, unsigned int size, int frame_width, int frame_height,
                          int pitch, int uv_offset);
+/* Set the YCbCr -> RGB conversion (limited/full range, 601/709 coefficients)
+ * from the stream's own metadata. */
+void egl_set_color_params(float yscale, float yoff, float rv, float gu, float gv, float bu);
 void egl_destroy();

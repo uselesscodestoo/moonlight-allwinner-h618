@@ -25,6 +25,7 @@
 #endif
 
 #include <libswscale/swscale.h>
+#include <libavutil/pixdesc.h>
 
 #include "../input/x11.h"
 #include "../loop.h"
@@ -153,10 +154,70 @@ static void display_inhibit_blanking(Display* dpy, Bool inhibit) {
   XFlush(dpy);
 }
 
+
+/* Pick the YCbCr -> RGB coefficients from the stream metadata.  Sunshine's
+ * desktop capture tags limited-range BT.601 (smpte170m), which is common for
+ * NVENC/desktop streams; HD streams that do not say anything are assumed
+ * BT.709, like other Moonlight clients do. */
+static void apply_stream_colors(AVFrame* frame) {
+  static int last_space = -2, last_range = -2;
+  int use709, full;
+  float yscale, yoff, rv, gu, gv, bu;
+
+  if (frame->colorspace == last_space && frame->color_range == last_range)
+    return;
+  last_space = frame->colorspace;
+  last_range = frame->color_range;
+
+  switch (frame->colorspace) {
+    case AVCOL_SPC_BT709:
+      use709 = 1;
+      break;
+    case AVCOL_SPC_SMPTE170M:
+    case AVCOL_SPC_BT470BG:
+    case AVCOL_SPC_SMPTE240M:
+      use709 = 0;
+      break;
+    default:
+      use709 = frame->height >= 720;
+      break;
+  }
+  full = (frame->color_range == AVCOL_RANGE_JPEG);
+
+  if (full) {
+    yscale = 1.0f;
+    yoff = 0.0f;
+    if (use709) { rv = 1.5748f; gu = 0.1873f; gv = 0.4681f; bu = 1.8556f; }
+    else        { rv = 1.4020f; gu = 0.3441f; gv = 0.7141f; bu = 1.7720f; }
+  } else {
+    yscale = 1.164383f;
+    yoff = 16.0f / 255.0f;
+    if (use709) { rv = 1.792741f; gu = 0.213249f; gv = 0.532909f; bu = 2.112402f; }
+    else        { rv = 1.596027f; gu = 0.391762f; gv = 0.812968f; bu = 2.017232f; }
+  }
+
+  egl_set_color_params(yscale, yoff, rv, gu, gv, bu);
+  fprintf(stderr, "x11: colour conversion: %s range, %s matrix\n",
+          full ? "full" : "limited", use709 ? "BT.709" : "BT.601");
+}
+
 static int frame_handle(int pipefd) {
   AVFrame* frame = NULL;
   while (read(pipefd, &frame, sizeof(void*)) > 0);
   if (frame) {
+    apply_stream_colors(frame);
+
+    /* Report what the stream declares (HEVC VUI) so the colour conversion in
+     * the shaders can be checked against it. */
+    static int color_reported;
+    if (!color_reported) {
+      fprintf(stderr, "x11: stream colour: range=%s space=%s primaries=%s trc=%s\n",
+              av_color_range_name(frame->color_range),
+              av_color_space_name(frame->colorspace),
+              av_color_primaries_name(frame->color_primaries),
+              av_color_transfer_name(frame->color_trc));
+      color_reported = 1;
+    }
     if (ffmpeg_decoder == SOFTWARE)
       egl_draw(frame->data);
     #ifdef HAVE_VAAPI
