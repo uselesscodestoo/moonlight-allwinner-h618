@@ -65,6 +65,7 @@ static int vaapi_sws_w, vaapi_sws_h;
 /* Temporary instrumentation: report which render path runs and the fps. */
 static double dbg_t0;
 static double dbg_last, dbg_cost_sum, dbg_cost_sum2, dbg_cost_sum3;
+static volatile unsigned long dbg_submits, dbg_submits_shown, dbg_submit_window;
 static int dbg_frames;
 static char dbg_path_name[32];
 
@@ -92,6 +93,10 @@ static void dbg_note2(const char* label, int w, int h, double c1, double c2, dou
     dbg_cost_sum3 = 0;
   }
   dbg_frames++;
+  /* Decode units submitted (i.e. frames the host actually sent) in this
+   * reporting window; compare with the rendered frame count. */
+  dbg_submit_window += dbg_submits - dbg_submits_shown;
+  dbg_submits_shown = dbg_submits;
   dbg_cost_sum += c1;
   dbg_cost_sum2 += c2;
   dbg_cost_sum3 += c3;
@@ -99,10 +104,11 @@ static void dbg_note2(const char* label, int w, int h, double c1, double c2, dou
     double now = now_ms();
     double dt = now - dbg_t0;
     double dfps = (now - dbg_last) > 0 ? 10000.0 / (now - dbg_last) : 0.0;
-    fprintf(stderr, "x11: %s frame=%d %dx%d avg_fps=%.1f delta_fps=%.1f c1=%.1fms c2=%.1fms c3=%.1fms\n",
+    fprintf(stderr, "x11: %s frame=%d %dx%d avg_fps=%.1f delta_fps=%.1f submits=%lu c1=%.1fms c2=%.1fms c3=%.1fms\n",
             label, dbg_frames, w, h, dt > 0 ? 1000.0 * dbg_frames / dt : 0.0,
-            dfps, dbg_cost_sum / 10.0, dbg_cost_sum2 / 10.0, dbg_cost_sum3 / 10.0);
+            dfps, dbg_submit_window, dbg_cost_sum / 10.0, dbg_cost_sum2 / 10.0, dbg_cost_sum3 / 10.0);
     dbg_last = now;
+    dbg_submit_window = 0;
     dbg_cost_sum = 0;
     dbg_cost_sum2 = 0;
     dbg_cost_sum3 = 0;
@@ -361,6 +367,7 @@ int x11_submit_decode_unit(PDECODE_UNIT decodeUnit) {
     entry = entry->next;
   }
 
+  dbg_submits++;
   ffmpeg_decode(ffmpeg_buffer, length);
 
   AVFrame* frame = ffmpeg_get_frame(true);
