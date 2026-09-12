@@ -138,10 +138,14 @@ static void display_inhibit_blanking(Display* dpy, Bool inhibit) {
 
 #ifdef HAVE_DPMS
   if (DPMSQueryExtension(dpy, &event_base, &error_base)) {
-    if (inhibit)
+    if (inhibit) {
       DPMSDisable(dpy);
-    else
+      /* An output that is already blanked stays blanked otherwise, and
+       * presenting to a disabled CRTC costs ~750 ms per swap. */
+      DPMSForceLevel(dpy, DPMSModeOn);
+    } else {
       DPMSEnable(dpy);
+    }
   }
 #endif
 #ifdef HAVE_XSS
