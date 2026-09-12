@@ -334,7 +334,7 @@ static void color_selftest(void) {
     for (y = 0; y < h; y++)
       for (x = 0; x < w; x++)
         plane[y * w + x] = cases[c].y;
-    for (y = 0; y < h; y++) {           /* 2 chroma rows, interleaved U/V */
+    for (y = 0; y < h / 2; y++) {       /* chroma rows, interleaved U/V */
       for (x = 0; x < w; x++)
         plane[(h + y) * w + x] = (x & 1) ? cases[c].v : cases[c].u;
     }
