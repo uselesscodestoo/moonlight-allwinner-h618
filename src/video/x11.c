@@ -127,11 +127,25 @@ static void dbg_note2(const char* label, int w, int h, double c1, double c2, dou
 /* A DPMS-off CRTC (blanked monitor) makes an EGL swap of a 1920x1080 buffer
  * cost ~750 ms instead of ~2 ms, which throttles streaming to ~1 fps, so keep
  * the output awake for as long as we are displaying. */
+/* These are optional comfort calls (keep the output awake while streaming).
+ * They must never be able to kill the client: with the DPMS extension disabled
+ * (xset -dpms) DPMSForceLevel() fails with BadMatch, and Xlib's default error
+ * handler exits the process - which is what a never-blank desktop setting
+ * produces, so ignore X errors around them. */
+static int ignore_x_error(Display* dpy, XErrorEvent* ev) {
+  (void) dpy;
+  (void) ev;
+  return 0;
+}
+
 static void display_inhibit_blanking(Display* dpy, Bool inhibit) {
   int event_base, error_base;
+  XErrorHandler previous;
 
   if (dpy == NULL)
     return;
+
+  previous = XSetErrorHandler(ignore_x_error);
 
   if (inhibit)
     XResetScreenSaver(dpy);
@@ -141,8 +155,13 @@ static void display_inhibit_blanking(Display* dpy, Bool inhibit) {
     if (inhibit) {
       DPMSDisable(dpy);
       /* An output that is already blanked stays blanked otherwise, and
-       * presenting to a disabled CRTC costs ~750 ms per swap. */
-      DPMSForceLevel(dpy, DPMSModeOn);
+       * presenting to a disabled CRTC costs ~750 ms per swap.  Forcing the
+       * level is only meaningful - and only accepted - while the extension is
+       * enabled; with DPMS disabled nothing can blank the output anyway. */
+      BOOL state = 0;
+      CARD16 power_level = 0;
+      if (DPMSInfo(dpy, &power_level, &state) && state)
+        DPMSForceLevel(dpy, DPMSModeOn);
     } else {
       DPMSEnable(dpy);
     }
@@ -155,7 +174,8 @@ static void display_inhibit_blanking(Display* dpy, Bool inhibit) {
   (void) event_base;
   (void) error_base;
 #endif
-  XFlush(dpy);
+  XSync(dpy, False);
+  XSetErrorHandler(previous);
 }
 
 
