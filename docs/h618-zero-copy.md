@@ -2,10 +2,10 @@
 
 This fork branch (`h618-egl-download`) renders VAAPI frames straight from the
 decoder's dma-buf instead of downloading them to system memory.  Companion
-driver: `libva-v4l2-request` branch `h618-c-port` (that repo's
-`docs/zero-copy-results.md` has the measurements, and
-`~/Downloads/handoff/RESULTS.md` plus `handoff/verify.sh` on the board have the
-operational view).
+driver: [`bootlin/libva-v4l2-request`](https://github.com/bootlin/libva-v4l2-request)
+with the H618 port (branch `h618-c-port`); that repository's
+`docs/zero-copy-results.md` holds the measurements.  `scripts/h618-quick-start.sh`
+is the launcher used on the reference board.
 
 ## Why
 
@@ -68,3 +68,41 @@ limited-range BT.601, which the shaders previously ignored.
 `x11.c` prints one line per 10 rendered frames with the achieved fps, the
 decode units the host actually sent, and the per-stage cost, which is how the
 "is the client keeping up?" question is answered.
+
+## Known issues
+
+### Fixed vertical tear under heavy motion (recorded 2026-09-16, not fixed)
+
+With a 1080p HEVC stream, fast horizontal motion (scrolling) shows a vertical
+discontinuity - a "crack" - at a fixed horizontal position of roughly 1000 px
+(reporter's estimate; a 1920-wide frame encoded with 4 slices has slice
+boundaries at 480/960/1440 px).  The two sides show different frames' content
+rather than wrong colours, and daily office use is unaffected.
+
+Suspected cause: the zero-copy path hands the decoder's capture buffer to the
+GPU without synchronising it against the VPU.  A surface is released once the
+driver no longer needs it, so the VPU can already be writing the next frame
+while the display still samples the previous one; whatever has been overwritten
+then differs from the rest of the frame, which is exactly the kind of seam that
+lands on a slice/tile boundary.  The CPU path (`MOONLIGHT_NO_ZC=1`) forces a
+full sync and is not expected to show it.
+
+Confirming and fixing:
+
+* run the same content with `MOONLIGHT_NO_ZC=1`; if the tear disappears the
+  hypothesis is right;
+* then either keep the exported surface busy until the frame has been presented
+  (release it after `eglSwapBuffers`, not before), or add explicit
+  synchronisation between the VPU write and the GPU read (`DMA_BUF_IOCTL_SYNC`
+  on the exported dma-buf, or a fence).
+
+### Other known issues
+
+* HEVC with more than one B frame per group differs from a software decoder on
+  the first B frame after each IDR (hardware behaviour; H264 and HEVC with at
+  most one B frame per group are byte-exact).
+* The X server limits presentation, not the client: ~29 fps at 1080p with
+  xfwm4's compositor and ~48-53 fps without it, independent of window size.
+* A blanked output (DPMS off) or a client on a background VT (Xorg suspends
+  AIGLX, DRI3Open fails) silently pushes everything onto llvmpipe at a few fps;
+  the reference script detects both.
