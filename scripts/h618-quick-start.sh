@@ -9,7 +9,8 @@
 # and drop the board-specific parts (panfrost reload, VT/lock diagnostics,
 # xfwm4 compositor toggle) if they do not apply to your system.
 #
-# Board-specific notes (see ~/Downloads/handoff/RESULTS.md for measurements):
+# Board-specific notes (see docs/h618-zero-copy.md in this repository for the
+# measurements and the full list of known issues):
 #
 #  * Hardware decode uses the custom libva-v4l2-request driver in
 #    ~/Downloads/v4l2-dri.  It asks the kernel for plain linear NV12 capture
