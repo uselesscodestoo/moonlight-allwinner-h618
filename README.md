@@ -36,6 +36,16 @@ See `docs/h618-zero-copy.md` for the design and `scripts/h618-quick-start.sh`
 for a reference launch script (relative paths; documented for the Orange Pi
 Zero 2W / H618, adapt as needed).
 
+### Building (H618 reference configuration)
+
+```sh
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j2      # binary: build/moonlight
+# run (see scripts/h618-quick-start.sh):
+LIBVA_DRIVER_NAME=v4l2_request LIBVA_DRIVERS_PATH=<libva build or install dir> \
+  ./build/moonlight -platform x11_vaapi -codec h265 -1080 -fps 60 -app Desktop stream <host>
+```
+
 ### Known issues
 
 * A fixed **vertical tear** can appear under heavy motion (e.g. scrolling) on
