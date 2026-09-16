@@ -45,7 +45,7 @@
 
 set -u
 
-HOST=${HOST:-172.31.5.252}
+HOST=${HOST:-192.168.1.100}   # your Sunshine/GameStream host
 APP=${APP:-Desktop}
 CODEC=${CODEC:-h265}
 FPS=${FPS:-60}
