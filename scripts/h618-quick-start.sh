@@ -52,6 +52,14 @@ FPS=${FPS:-60}
 LOCALAUDIO=${LOCALAUDIO:-1}
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 MOONLIGHT="${MOONLIGHT:-$SCRIPT_DIR/../build/moonlight}"
+# The binary must exist: on a fresh checkout it is not built yet.
+if [ ! -x "$MOONLIGHT" ]; then
+    echo "stream-desktop: $MOONLIGHT not found - build it first:" >&2
+    echo "stream-desktop:   cmake -S \"$SCRIPT_DIR/..\" -B \"$SCRIPT_DIR/../build\" -DCMAKE_BUILD_TYPE=Release" >&2
+    echo "stream-desktop:   cmake --build \"$SCRIPT_DIR/../build\" -j2" >&2
+    exit 1
+fi
+
 # Where the v4l2_request driver .so lives: LIBVA_DRIVERS_PATH wins, otherwise
 # look next to this repository (the layout used on the reference board:
 # ~/Downloads/{libva-v4l2-request,moonlight-embedded,v4l2-dri}).
@@ -66,6 +74,12 @@ if [ -z "${LIBVA_DRIVERS_PATH:-}" ] || [ ! -f "$LIBVA_DRIVERS_PATH/v4l2_request_
     exit 1
 fi
 export LIBVA_DRIVERS_PATH
+
+# es2_info (mesa-utils) is only used to detect the llvmpipe/background-VT trap;
+# without it the GPU check is skipped rather than guessed.
+if ! command -v es2_info >/dev/null 2>&1; then
+    echo "stream-desktop: es2_info (mesa-utils) not found; skipping the GPU check" >&2
+fi
 
 # Optional positional overrides: 720/1080 and fps.
 case "${1:-}" in
@@ -139,7 +153,10 @@ for id in $(loginctl list-sessions --no-legend 2>/dev/null | awk '$6=="greeter" 
     [ "$(loginctl show-session "$id" -p LockedHint --value 2>/dev/null)" = "yes" ] && greeter_locked=yes
 done
 
-gpu_renderer() { es2_info 2>/dev/null | grep -m1 -o 'GL_RENDERER:.*'; }
+gpu_renderer() {
+    command -v es2_info >/dev/null 2>&1 || return 0
+    es2_info 2>/dev/null | grep -m1 -o 'GL_RENDERER:.*'
+}
 renderer=$(gpu_renderer)
 
 if [ "$locked" = "yes" ]; then
