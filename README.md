@@ -4,15 +4,15 @@
 
 This tree is a **derived work** of
 [`moonlight-stream/moonlight-embedded`](https://github.com/moonlight-stream/moonlight-embedded)
-(GPL-3.0, see `LICENSE`), published as the branch **`h618-egl-download`**.  It is
-*not* a GitHub fork: the repository was obtained with `git clone --depth 1`,
-which makes GitHub refuse to create forks of it, so the provenance is stated
-here instead.  All upstream credit belongs to the Moonlight Embedded authors.
+(GPL-3.0, see `LICENSE`), published as the branch **`h618-egl-download`**.  This
+is a GitHub fork of the upstream repository, maintained independently: the
+changes target the Allwinner H618 and are not intended for upstream.  All
+upstream credit belongs to the Moonlight Embedded authors.
 
 * Upstream: <https://github.com/moonlight-stream/moonlight-embedded>
 * Base commit of this tree: `f32e415` ("libgamestream: fix uniqueid.dat read check")
-* Shallow clone: yes (`--depth 1`) - history older than `f32e415` is not present
-  here; get it from upstream.
+* Full history: the tree started as a `git clone --depth 1` and has since been
+  unshallowed, so the complete upstream history up to `f32e415` is present.
 * Companion driver: [`bootlin/libva-v4l2-request`](https://github.com/bootlin/libva-v4l2-request)
   with the H618 cedrus port and linear-NV12 capture support (branch
   `h618-c-port`).
