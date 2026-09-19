@@ -1,0 +1,18 @@
+/dts-v1/;
+/plugin/;
+/ {
+    compatible = "allwinner,sun50i-h616";
+    fragment@0 {
+        target-path = "/soc";
+        __overlay__ {
+            g2d: g2d@1480000 {
+                compatible = "allwinner,sunxi-g2d";
+                reg = <0x01480000 0x3ffff>;
+                interrupts = <0 90 4>;
+                clocks = <&ccu 33>;        /* CLK_G2D: verified 33 in sun50i-h616-ccu.h */
+                clock-names = "g2d";
+                status = "okay";
+            };
+        };
+    };
+};
