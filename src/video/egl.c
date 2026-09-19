@@ -31,10 +31,15 @@
 #include <stdbool.h>
 #include <string.h>
 #include <pthread.h>
+#include <time.h>
 #include <unistd.h>
 
 #ifndef DRM_FORMAT_R8
 #define DRM_FORMAT_R8 0x20203852 /* 'R', '8', ' ', ' ' */
+#endif
+
+#ifndef DRM_FORMAT_GR88
+#define DRM_FORMAT_GR88 0x38385247 /* 'G', 'R', '8', '8' */
 #endif
 
 /* Not all GLES3 headers declare this extension entry point. */
@@ -146,17 +151,18 @@ void main() {\n\
   outColor = vec4(clamp(rgb, 0.0, 1.0), 1.0);\n\
 }\n";
 
-/* Linear NV12 path: the capture dma-buf is a plain NV12 buffer, so the
- * whole buffer is imported once as an R8 image (stride = luma pitch) and
- * both planes are fetched with texelFetch.  Chroma plane row offset is
- * uv_offset / pitch.  No de-tiling math is needed. */
+/* Linear NV12 path: the capture dma-buf is a plain NV12 buffer, so the luma
+ * plane is imported as an R8 image and the interleaved chroma plane as a GR88
+ * image (R = U, G = V).  Both planes are fetched with integer texelFetch, so
+ * the shader needs just two fetches instead of three and no dependent chroma
+ * double-fetch.  No de-tiling math is needed. */
 static const char* nv12_fragment_source = "\
 #version 300 es\n\
 precision highp float;\n\
 precision highp int;\n\
 precision highp sampler2D;\n\
-uniform sampler2D u_tex;\n\
-uniform int u_uv_row;\n\
+uniform sampler2D u_tex_y;\n\
+uniform sampler2D u_tex_uv;\n\
 uniform int u_frame_w;\n\
 uniform int u_frame_h;\n\
 uniform int u_view_w;\n\
@@ -177,14 +183,13 @@ void main() {\n\
            : int(float(gl_FragCoord.y) * float(u_frame_h) / float(u_view_h));\n\
   int x = ux;\n\
   int y = u_frame_h - 1 - uy;\n\
-  int cy = y >> 1;\n\
   int cx = x >> 1;\n\
-  float Y = texelFetch(u_tex, ivec2(x, y), 0).r;\n\
-  float U = texelFetch(u_tex, ivec2(2 * cx, u_uv_row + cy), 0).r;\n\
-  float V = texelFetch(u_tex, ivec2(2 * cx + 1, u_uv_row + cy), 0).r;\n\
+  int cy = y >> 1;\n\
+  float Y = texelFetch(u_tex_y, ivec2(x, y), 0).r;\n\
+  vec2 UV = texelFetch(u_tex_uv, ivec2(cx, cy), 0).rg;\n\
   float Yp = (Y - u_yoff) * u_yscale;\n\
-  float Up = U - 128.0 / 255.0;\n\
-  float Vp = V - 128.0 / 255.0;\n\
+  float Up = UV.r - 128.0 / 255.0;\n\
+  float Vp = UV.g - 128.0 / 255.0;\n\
   vec3 rgb = vec3(Yp + u_rv * Vp,\n\
                   Yp - u_gu * Up - u_gv * Vp,\n\
                   Yp + u_bu * Up);\n\
@@ -241,6 +246,97 @@ static struct {
 static int dmabuf_images_count;
 static int dmabuf_last_w, dmabuf_last_h;
 
+static GLuint nv12_texture[2];   /* [0] luma R8, [1] chroma GR88 */
+static struct {
+  int fd;
+  EGLImageKHR y;
+  EGLImageKHR uv;
+} dmabuf_nv12[DMABUF_MAX_IMAGES];
+static int dmabuf_nv12_count;
+
+static int zc_breakdown = -1;
+static unsigned zc_bd_frames, zc_img_hits, zc_img_creates;
+static double zc_bd_img, zc_bd_render, zc_bd_swap;
+
+static double zc_now_ms(void) {
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return ts.tv_sec * 1000.0 + ts.tv_nsec / 1000000.0;
+}
+
+static EGLImageKHR create_single_plane_image(int fd, int fourcc, int pitch,
+                                             int offset, int height) {
+  EGLint attrs[] = {
+    EGL_WIDTH,  (fourcc == DRM_FORMAT_GR88) ? pitch / 2 : pitch,
+    EGL_HEIGHT, height,
+    EGL_LINUX_DRM_FOURCC_EXT, fourcc,
+    EGL_DMA_BUF_PLANE0_FD_EXT, fd,
+    EGL_DMA_BUF_PLANE0_OFFSET_EXT, offset,
+    EGL_DMA_BUF_PLANE0_PITCH_EXT, pitch,
+    EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT, 0,
+    EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT, 0,
+    EGL_NONE
+  };
+  return p_eglCreateImageKHR(display, EGL_NO_CONTEXT, EGL_LINUX_DMA_BUF_EXT,
+                             NULL, attrs);
+}
+
+static int dmabuf_get_nv12(int fd, int height, int pitch,
+                           int uv_offset, EGLImageKHR *out_y, EGLImageKHR *out_uv) {
+  int i;
+  for (i = 0; i < dmabuf_nv12_count; i++)
+    if (dmabuf_nv12[i].fd == fd) {
+      *out_y = dmabuf_nv12[i].y;
+      *out_uv = dmabuf_nv12[i].uv;
+      zc_img_hits++;
+      return (dmabuf_nv12[i].y != EGL_NO_IMAGE_KHR &&
+              dmabuf_nv12[i].uv != EGL_NO_IMAGE_KHR) ? 0 : -1;
+    }
+  if (dmabuf_nv12_count >= DMABUF_MAX_IMAGES)
+    return -1;
+  EGLImageKHR y  = create_single_plane_image(fd, DRM_FORMAT_R8, pitch, 0, height);
+  EGLImageKHR uv = create_single_plane_image(fd, DRM_FORMAT_GR88, pitch,
+                                             uv_offset, height / 2);
+  if (y == EGL_NO_IMAGE_KHR || uv == EGL_NO_IMAGE_KHR) {
+    static int failures;
+    if (failures++ < 5)
+      fprintf(stderr, "EGL: nv12 image(fd=%d) failed y=%p uv=%p 0x%x\n",
+              fd, (void *)y, (void *)uv, eglGetError());
+    if (y  != EGL_NO_IMAGE_KHR && p_eglDestroyImageKHR) p_eglDestroyImageKHR(display, y);
+    if (uv != EGL_NO_IMAGE_KHR && p_eglDestroyImageKHR) p_eglDestroyImageKHR(display, uv);
+    /* Negative cache: without this a persistently bad fd would retry two
+     * eglCreateImageKHR calls on every single frame.  The hit path above
+     * returns -1 immediately for an entry whose images are EGL_NO_IMAGE_KHR. */
+    if (dmabuf_nv12_count < DMABUF_MAX_IMAGES) {
+      dmabuf_nv12[dmabuf_nv12_count].fd = fd;
+      dmabuf_nv12[dmabuf_nv12_count].y  = EGL_NO_IMAGE_KHR;
+      dmabuf_nv12[dmabuf_nv12_count].uv = EGL_NO_IMAGE_KHR;
+      dmabuf_nv12_count++;
+      zc_img_creates++;
+    }
+    return -1;
+  }
+  dmabuf_nv12[dmabuf_nv12_count].fd = fd;
+  dmabuf_nv12[dmabuf_nv12_count].y  = y;
+  dmabuf_nv12[dmabuf_nv12_count].uv = uv;
+  dmabuf_nv12_count++;
+  zc_img_creates++;
+  *out_y = y;
+  *out_uv = uv;
+  return 0;
+}
+
+static void dmabuf_nv12_reset(void) {
+  int i;
+  for (i = 0; i < dmabuf_nv12_count; i++) {
+    if (p_eglDestroyImageKHR) {
+      if (dmabuf_nv12[i].y  != EGL_NO_IMAGE_KHR) p_eglDestroyImageKHR(display, dmabuf_nv12[i].y);
+      if (dmabuf_nv12[i].uv != EGL_NO_IMAGE_KHR) p_eglDestroyImageKHR(display, dmabuf_nv12[i].uv);
+    }
+  }
+  dmabuf_nv12_count = 0;
+}
+
 void egl_set_color_params(float yscale, float yoff, float rv, float gu, float gv, float bu) {
   color_yscale = yscale;
   color_yoff = yoff;
@@ -261,10 +357,10 @@ static void upload_color_params(const GLint* u) {
 
 
 /* Unit test for the YCbCr -> RGB conversion: feed known limited-range BT.601
- * triples through the very same shader the stream path uses (one R8 texture
- * holding a luma plane followed by an interleaved chroma plane) and compare
- * the rendered pixels against the standard's expected RGB.  Enabled with
- * MOONLIGHT_COLOR_SELFTEST=1; runs once, before the first stream frame. */
+ * triples through the very same shader the stream path uses (an R8 luma
+ * texture and a GR88 chroma texture) and compare the rendered pixels against
+ * the standard's expected RGB.  Enabled with MOONLIGHT_COLOR_SELFTEST=1; runs
+ * once, before the first stream frame. */
 static void color_selftest(void) {
   static const struct {
     const char* name;
@@ -279,16 +375,18 @@ static void color_selftest(void) {
     { "blue",           41, 240, 110,   0,   0, 255 },
   };
   const int w = 4, h = 4;
-  unsigned char plane[4 * 6];
+  unsigned char luma[4 * 4];
+  unsigned char chroma[2 * 2 * 2];
   unsigned char pixels[4 * 4 * 4];
-  GLuint tex, fbo, rbo;
+  GLuint tex_y, tex_uv, fbo, rbo;
   int failures = 0;
   unsigned int c;
 
   if (!nv12_program)
     return;
 
-  glGenTextures(1, &tex);
+  glGenTextures(1, &tex_y);
+  glGenTextures(1, &tex_uv);
   glGenFramebuffers(1, &fbo);
   glGenRenderbuffers(1, &rbo);
 
@@ -302,27 +400,16 @@ static void color_selftest(void) {
   }
 
   glUseProgram(nv12_program);
-  glActiveTexture(GL_TEXTURE0);
-  glBindTexture(GL_TEXTURE_2D, tex);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-  glUniform1i(nv12_uniforms[0], 0);
-  glUniform1i(nv12_uniforms[1], h);      /* u_uv_row */
   glUniform1i(nv12_uniforms[2], w);      /* u_frame_w */
   glUniform1i(nv12_uniforms[3], h);      /* u_frame_h */
   glUniform1i(nv12_uniforms[4], w);      /* u_view_w  */
   glUniform1i(nv12_uniforms[5], h);      /* u_view_h  */
   glUniform1i(nv12_trivial_uniform, 0);
-  upload_color_params(nv12_color_uniforms);
 
   glViewport(0, 0, w, h);
   glDisable(GL_BLEND);
   glDisableVertexAttribArray(0);
 
-  /* Limited-range BT.601, the coefficients the caller installs for a stream
-   * that declares smpte170m. */
   egl_set_color_params(1.164383f, 16.0f / 255.0f, 1.596027f, 0.391762f, 0.812968f, 2.017232f);
   upload_color_params(nv12_color_uniforms);
 
@@ -333,12 +420,35 @@ static void color_selftest(void) {
 
     for (y = 0; y < h; y++)
       for (x = 0; x < w; x++)
-        plane[y * w + x] = cases[c].y;
-    for (y = 0; y < h / 2; y++) {       /* chroma rows, interleaved U/V */
-      for (x = 0; x < w; x++)
-        plane[(h + y) * w + x] = (x & 1) ? cases[c].v : cases[c].u;
-    }
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, w, h * 2, 0, GL_RED, GL_UNSIGNED_BYTE, plane);
+        luma[y * w + x] = cases[c].y;
+    for (y = 0; y < h / 2; y++)
+      for (x = 0; x < w / 2; x++) {
+        chroma[(y * (w / 2) + x) * 2 + 0] = cases[c].u;
+        chroma[(y * (w / 2) + x) * 2 + 1] = cases[c].v;
+      }
+
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, tex_y);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, w, h, 0, GL_RED, GL_UNSIGNED_BYTE, luma);
+    glUniform1i(nv12_uniforms[0], 0);
+
+    /* The chroma plane is uploaded as a plain GL_RG8 texture, not a real
+     * GR88 dma-buf: this validates the shader's .rg mapping and the YCbCr
+     * maths, but not the byte order the EGL dma-buf import produces. */
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, tex_uv);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RG8, w / 2, h / 2, 0, GL_RG,
+                 GL_UNSIGNED_BYTE, chroma);
+    glUniform1i(nv12_uniforms[1], 1);
+
     glDrawArrays(GL_TRIANGLES, 0, 3);
     glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
 
@@ -364,7 +474,8 @@ static void color_selftest(void) {
 out:
   glDeleteRenderbuffers(1, &rbo);
   glDeleteFramebuffers(1, &fbo);
-  glDeleteTextures(1, &tex);
+  glDeleteTextures(1, &tex_y);
+  glDeleteTextures(1, &tex_uv);
   glViewport(0, 0, width, height);
 }
 
@@ -511,10 +622,11 @@ void egl_init(EGLNativeDisplayType native_display, NativeWindowType native_windo
       dmabuf_uniforms[9 + i] = glGetUniformLocation(dmabuf_program, cnames[i]);
     dmabuf_trivial = getenv("MOONLIGHT_ZC_TRIVIAL") != NULL;
     glGenTextures(1, &dmabuf_texture);
+    glGenTextures(2, nv12_texture);
 
     nv12_program = compile_program(dmabuf_vertex_source, nv12_fragment_source, "nv12-linear");
-    nv12_uniforms[0] = glGetUniformLocation(nv12_program, "u_tex");
-    nv12_uniforms[1] = glGetUniformLocation(nv12_program, "u_uv_row");
+    nv12_uniforms[0] = glGetUniformLocation(nv12_program, "u_tex_y");
+    nv12_uniforms[1] = glGetUniformLocation(nv12_program, "u_tex_uv");
     nv12_uniforms[2] = glGetUniformLocation(nv12_program, "u_frame_w");
     nv12_uniforms[3] = glGetUniformLocation(nv12_program, "u_frame_h");
     nv12_uniforms[4] = glGetUniformLocation(nv12_program, "u_view_w");
@@ -677,18 +789,23 @@ int egl_draw_dmabuf(int dmabuf_fd, unsigned int size, int frame_width, int frame
   return 0;
 }
 
-/* Zero-copy render for a *linear* NV12 capture buffer.  uv_offset must be a
- * whole number of luma rows (it is, because the luma plane is allocated
- * height-aligned), which lets a single R8 image cover both planes. */
-int egl_draw_dmabuf_nv12(int dmabuf_fd, unsigned int size, int frame_width, int frame_height,
-                         int pitch, int uv_offset) {
-  EGLImageKHR img;
-  int tex_height, uv_row;
+/* Zero-copy render for a *linear* NV12 capture buffer.  The luma plane is
+ * imported as an R8 image and the interleaved chroma plane as a GR88 image,
+ * each with its own integer texelFetch.  uv_offset is a byte offset handed
+ * straight to EGL; the uv_offset % pitch check is only a sanity check that
+ * the chroma plane starts on a luma-row boundary. */
+int egl_draw_dmabuf_nv12(int dmabuf_fd, unsigned int size, int frame_width,
+                         int frame_height, int pitch, int uv_offset) {
+  EGLImageKHR img_y, img_uv;
   EGLint surf_w = 0, surf_h = 0;
 
-  if (!nv12_program || pitch <= 0 || uv_offset % pitch != 0)
+  if (zc_breakdown < 0)
+    zc_breakdown = getenv("MOONLIGHT_ZC_BREAKDOWN") != NULL;
+  double bd0 = zc_breakdown ? zc_now_ms() : 0.0;
+
+  if (!nv12_program || pitch <= 0 || pitch < frame_width ||
+      uv_offset % pitch != 0)
     return -1;
-  uv_row = uv_offset / pitch;
 
   if (!current) {
     eglMakeCurrent(display, surface, surface, context);
@@ -696,37 +813,42 @@ int egl_draw_dmabuf_nv12(int dmabuf_fd, unsigned int size, int frame_width, int 
   }
 
   if (frame_width != dmabuf_last_w || frame_height != dmabuf_last_h) {
-    for (int i = 0; i < dmabuf_images_count; i++)
-      if (p_eglDestroyImageKHR)
-        p_eglDestroyImageKHR(display, dmabuf_images[i].image);
-    dmabuf_images_count = 0;
+    dmabuf_nv12_reset();
     dmabuf_last_w = frame_width;
     dmabuf_last_h = frame_height;
   }
 
-  tex_height = ((int)size + pitch - 1) / pitch;
-  img = dmabuf_get_image(dmabuf_fd, pitch, tex_height);
-  if (img == EGL_NO_IMAGE_KHR)
+  if (dmabuf_get_nv12(dmabuf_fd, frame_height, pitch, uv_offset,
+                      &img_y, &img_uv) != 0)
     return -1;
+
+  double bd1 = zc_breakdown ? zc_now_ms() : 0.0;
 
   eglQuerySurface(display, surface, EGL_WIDTH, &surf_w);
   eglQuerySurface(display, surface, EGL_HEIGHT, &surf_h);
-  if (surf_w <= 0)
-    surf_w = width;
-  if (surf_h <= 0)
-    surf_h = height;
+  if (surf_w <= 0) surf_w = width;
+  if (surf_h <= 0) surf_h = height;
 
   glUseProgram(nv12_program);
+
   glActiveTexture(GL_TEXTURE0);
-  glBindTexture(GL_TEXTURE_2D, dmabuf_texture);
-  p_glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, img);
+  glBindTexture(GL_TEXTURE_2D, nv12_texture[0]);
+  p_glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, img_y);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+  glActiveTexture(GL_TEXTURE1);
+  glBindTexture(GL_TEXTURE_2D, nv12_texture[1]);
+  p_glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, img_uv);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
   glUniform1i(nv12_uniforms[0], 0);
-  glUniform1i(nv12_uniforms[1], uv_row);
+  glUniform1i(nv12_uniforms[1], 1);
   glUniform1i(nv12_uniforms[2], frame_width);
   glUniform1i(nv12_uniforms[3], frame_height);
   glUniform1i(nv12_uniforms[4], surf_w);
@@ -737,9 +859,10 @@ int egl_draw_dmabuf_nv12(int dmabuf_fd, unsigned int size, int frame_width, int 
   {
     static int dbg_shown;
     if (!dbg_shown) {
-      fprintf(stderr, "EGL: nv12 dmabuf import fd=%d size=%u pitch=%d tex_h=%d uv_row=%d "
-                      "frame=%dx%d view=%dx%d\n",
-              dmabuf_fd, size, pitch, tex_height, uv_row, frame_width, frame_height, surf_w, surf_h);
+      fprintf(stderr, "EGL: nv12 two-plane import fd=%d size=%u pitch=%d "
+                      "uv_off=%d frame=%dx%d view=%dx%d\n",
+              dmabuf_fd, size, pitch, uv_offset, frame_width, frame_height,
+              surf_w, surf_h);
       dbg_shown = 1;
     }
   }
@@ -747,17 +870,45 @@ int egl_draw_dmabuf_nv12(int dmabuf_fd, unsigned int size, int frame_width, int 
   glDisable(GL_BLEND);
   glDisableVertexAttribArray(0);
   glDrawArrays(GL_TRIANGLES, 0, 3);
+  glActiveTexture(GL_TEXTURE0);
+
+  if (zc_breakdown) glFinish();
+  double bd2 = zc_breakdown ? zc_now_ms() : 0.0;
 
   eglSwapBuffers(display, surface);
+
+  double bd3 = zc_breakdown ? zc_now_ms() : 0.0;
+  if (zc_breakdown) {
+    zc_bd_img += bd1 - bd0;
+    zc_bd_render += bd2 - bd1;
+    zc_bd_swap += bd3 - bd2;
+    if (++zc_bd_frames == 30) {
+      fprintf(stderr, "EGL: zc breakdown img=%.2fms render+finish=%.2fms swap=%.2fms "
+                      "creates=%u hits=%u\n",
+              zc_bd_img / 30, zc_bd_render / 30, zc_bd_swap / 30,
+              zc_img_creates, zc_img_hits);
+      zc_bd_img = zc_bd_render = zc_bd_swap = 0;
+      zc_bd_frames = 0;
+    }
+  }
   return 0;
 }
 
 void egl_destroy() {
+  if (!current) {
+    eglMakeCurrent(display, surface, surface, context);
+    current = true;
+  }
   for (int i = 0; i < dmabuf_images_count; i++)
     if (p_eglDestroyImageKHR)
       p_eglDestroyImageKHR(display, dmabuf_images[i].image);
   dmabuf_images_count = 0;
+  dmabuf_nv12_reset();
+  glDeleteTextures(2, nv12_texture);
+  nv12_texture[0] = 0;
+  nv12_texture[1] = 0;
   eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+  current = false;
   eglDestroySurface(display, surface);
   eglDestroyContext(display, context);
   eglTerminate(display);
