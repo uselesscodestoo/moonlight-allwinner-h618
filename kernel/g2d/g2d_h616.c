@@ -22,8 +22,6 @@ struct g2d_dev {
     struct miscdevice misc;
 };
 
-static struct g2d_dev *g2d;
-
 static inline u32 g2d_rd(struct g2d_dev *g, u32 off) { return readl(g->base + off); }
 static inline void g2d_wr(struct g2d_dev *g, u32 off, u32 v) { writel(v, g->base + off); }
 
@@ -102,13 +100,14 @@ static int g2d_probe(struct platform_device *pdev)
     if (IS_ERR(g->clk_bus))
         return dev_err_probe(&pdev->dev, PTR_ERR(g->clk_bus), "failed to get bus clock\n");
 
-    ret = clk_prepare_enable(g->clk);
-    if (ret)
-        return dev_err_probe(&pdev->dev, ret, "failed to enable g2d clock\n");
+    /* sunxi convention: enable the bus clock before the module clock. */
     ret = clk_prepare_enable(g->clk_bus);
-    if (ret) {
-        clk_disable_unprepare(g->clk);
+    if (ret)
         return dev_err_probe(&pdev->dev, ret, "failed to enable bus clock\n");
+    ret = clk_prepare_enable(g->clk);
+    if (ret) {
+        clk_disable_unprepare(g->clk_bus);
+        return dev_err_probe(&pdev->dev, ret, "failed to enable g2d clock\n");
     }
 
     g->irq = platform_get_irq(pdev, 0);
@@ -125,13 +124,12 @@ static int g2d_probe(struct platform_device *pdev)
     g->misc.minor = MISC_DYNAMIC_MINOR;
     g->misc.name = "g2d";
     g->misc.fops = &g2d_fops;
-    g2d = g;
+    g->misc.parent = g->dev;
 
     g2d_hw_init(g);
 
     ret = misc_register(&g->misc);
     if (ret) {
-        g2d = NULL;
         platform_set_drvdata(pdev, NULL);
         goto err_clk;
     }
@@ -140,8 +138,8 @@ static int g2d_probe(struct platform_device *pdev)
     return 0;
 
 err_clk:
-    clk_disable_unprepare(g->clk_bus);
     clk_disable_unprepare(g->clk);
+    clk_disable_unprepare(g->clk_bus);
     return ret;
 }
 
@@ -152,35 +150,30 @@ static void g2d_remove(struct platform_device *pdev)
     if (!g)
         return;
 
-    /* platform_driver.remove() returns void, so a busy device cannot be
-     * failed with -EBUSY; refuse the teardown instead of tearing down a
-     * device that may still be in use. */
-    mutex_lock(&g->lock);
-    if (g->open_count) {
-        mutex_unlock(&g->lock);
-        dev_err(&pdev->dev, "g2d busy (%d open), refusing remove\n",
-                g->open_count);
-        return;
-    }
-    mutex_unlock(&g->lock);
+    /* Unbind is suppressed via suppress_bind_attrs and rmmod is blocked by
+     * .owner, so an open fd here would be a driver bug, not a race. */
+    WARN_ON(g->open_count);
 
     misc_deregister(&g->misc);
     g2d_wr(g, G2D_SCLK_GATE, 0x0);
     g2d_wr(g, G2D_HCLK_GATE, 0x0);
     g2d_wr(g, G2D_AHB_RESET, 0x0);
-    clk_disable_unprepare(g->clk_bus);
     clk_disable_unprepare(g->clk);
+    clk_disable_unprepare(g->clk_bus);
     platform_set_drvdata(pdev, NULL);
-    g2d = NULL;
 }
 
 static const struct of_device_id g2d_of[] = { { .compatible = "allwinner,sunxi-g2d" }, {} };
 MODULE_DEVICE_TABLE(of, g2d_of);
 static struct platform_driver g2d_driver = {
     .probe = g2d_probe, .remove = g2d_remove,
-    .driver = { .name = "sunxi-g2d-h616", .of_match_table = g2d_of },
+    .driver = {
+        .name = "sunxi-g2d-h616",
+        .of_match_table = g2d_of,
+        .suppress_bind_attrs = true,
+    },
 };
 module_platform_driver(g2d_driver);
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("OpenCode");
+MODULE_AUTHOR("scy");
 MODULE_DESCRIPTION("Allwinner H616 G2D (prototype)");
