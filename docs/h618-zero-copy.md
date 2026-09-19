@@ -20,10 +20,11 @@ The GPU can consume the same buffer for ~2-4 ms per frame.
 returned by `vaExportSurfaceHandle(DRM_PRIME_2)`:
 
 * **Linear NV12** (`objects[0].drm_format_modifier == 0`, produced when the
-  surface width is a multiple of 32): `egl_draw_dmabuf_nv12()` imports the whole
-  dma-buf once as an `R8` image (`EGL_WIDTH = luma pitch`) and the fragment
-  shader fetches Y at `(x, y)` and interleaved UV at row `uv_offset / pitch`.
-  No de-tiling arithmetic at all.
+  surface width is a multiple of 32): `egl_draw_dmabuf_nv12()` builds two
+  `EGLImage`s from the same dma-buf - luma as an `R8` image (width = luma pitch)
+  and chroma as a `GR88` image at byte offset `objects[0].offset[1]` (width =
+  pitch/2) - and the fragment shader does two `texelFetch` (`.r` = Y, `.rg` =
+  U,V).  The images are cached per fd and rebuilt only on resolution change.
 * **Tiled NV12** (`SUNXI_TILED_NV12`): `egl_draw_dmabuf()` imports the same way
   and de-tiles per fragment (32x32-byte tiles, left to right, 32-row bands).
   Correct but far too slow on Mali-G31 (~200 ms/frame at 720p), so it is opt-in
@@ -47,10 +48,14 @@ limited-range BT.601, which the shaders previously ignored.
   board lightdm's greeter (the lock screen) is what pulls the VT away after the
   screen saver blanked the session.  `~/stream-desktop.sh` detects this and says
   what to do.
-* **The X server is the presentation ceiling, not the client**: a fullscreen
-  1080p client caps at ~29 fps with xfwm4's compositor and ~48-53 fps without
-  it (measured with `glxgears` and `tools/egl_bench.c`); the cost is
-  size-independent, i.e. it is the server's per-frame work.
+* **The presentation path is not the wall - sampling the external dma-buf is**
+  (2026-09-19).  With the compositor off, an unchanged client presents at one
+  vblank (`MOONLIGHT_ZC_TRIVIAL` reaches 60 fps), and `MOONLIGHT_ZC_BREAKDOWN`
+  measures the import at ~0.0 ms and `eglSwapBuffers` at ~0.6 ms while the draw
+  itself costs ~29 ms: the two `texelFetch` of the imported planes dominate
+  (~22 ms).  A whole earlier claim that the X server cost ~19 ms/frame could not
+  be reproduced.  The compositor does cost ~10 ms/frame, so keep it off while
+  streaming.
 
 ## Debug switches
 
@@ -60,6 +65,7 @@ limited-range BT.601, which the shaders previously ignored.
 | `MOONLIGHT_NO_DRAW=1` | drop frames without rendering (decode-only rate) |
 | `MOONLIGHT_ZC_TILED=1` | use the tiled de-tile shader |
 | `MOONLIGHT_ZC_TRIVIAL=1` | constant-colour shader (isolates import+present) |
+| `MOONLIGHT_ZC_BREAKDOWN=1` | add `glFinish()` and print import / render+finish / swap per 30 frames |
 | `MOONLIGHT_COLOR_SELFTEST=1` | run the YCbCr->RGB self-test at startup |
 | `MOONLIGHT_NO_VSYNC=1` | `eglSwapInterval(0)` |
 | `V4L2_CAPTURE_FORMAT=nv12\|tiled` | driver-side capture format override |
@@ -101,8 +107,42 @@ Confirming and fixing:
 * HEVC with more than one B frame per group differs from a software decoder on
   the first B frame after each IDR (hardware behaviour; H264 and HEVC with at
   most one B frame per group are byte-exact).
-* The X server limits presentation, not the client: ~29 fps at 1080p with
-  xfwm4's compositor and ~48-53 fps without it, independent of window size.
 * A blanked output (DPMS off) or a client on a background VT (Xorg suspends
   AIGLX, DRI3Open fails) silently pushes everything onto llvmpipe at a few fps;
   the reference script detects both.
+
+## The 1080p60 ceiling (investigated 2026-09-19)
+
+The zero-copy path tops out at **~34-36 fps at 1080p** (`c2` ~25-29 ms).  The
+limit is the GPU sampling the decoder's dma-buf in the fragment shader; it is
+intrinsic to the external texture, not to X, vsync, the EGLImage import (cached,
+`creates` stays at 3 for a whole session) or `eglSwapBuffers`.
+
+Measured (1920x1080, compositor off, real stream):
+
+| run | `c2` |
+|---|---|
+| no sampling (`MOONLIGHT_ZC_TRIVIAL`) | ~15 ms / 60 fps |
+| one plane sampled | 19.4 ms / 51 fps |
+| two planes sampled (current) | ~25-29 ms / 34-36 fps |
+| GPU copy into native textures, then display | 36 ms (rejected) |
+
+Levers that were investigated and closed:
+
+* **Copy to GPU-native textures first** (a normal FBO pass): a net regression
+  (36 ms) - the extra pass costs more than it saves.
+* **Make the dma-buf cacheable**: the premise holds (cedrus uses
+  `dma_alloc_coherent`, so the CPU mapping is write-combine) but the mechanism
+  does not - panfrost maps *every* BO with `IOMMU_CACHE` (write-back), so the GPU
+  already reads it cached.  No lever there.
+* **Let the display engine scan the NV12 dma-buf directly** (hardware CSC, no GPU
+  sampling): the H616 DE33 VI plane's YUV formats are deliberately disabled by
+  Armbian patch `0032` because chroma upsampling needs the DE33 VI scaler, which
+  is **not yet supported upstream**.  Jernej's `update DE33 support` series is
+  still unmerged (as of 2026-09-19) and no scaler/RCQ enablement exists in any
+  tree, including the Sipeed LonganPi-3H SDK (whose `0010` is clock plumbing and
+  whose `0011` is an older bring-up that merely re-adds the broken YUV).
+
+A remaining untried idea is a GLES3.1 **compute** shader reading the external
+memory with coalesced loads (potentially much better memory-level parallelism
+than per-fragment `texelFetch`); it was not attempted.

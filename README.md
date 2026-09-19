@@ -54,8 +54,10 @@ LIBVA_DRIVER_NAME=v4l2_request LIBVA_DRIVERS_PATH=<libva build or install dir> \
 * HEVC streams with more than one B frame per group differ from a software
   decoder on the first B frame after each IDR (hardware behaviour; H264 is
   unaffected).  See the companion driver's `docs/zero-copy-results.md`.
-* The X server, not the client, limits presentation: ~29 fps at 1080p with
-  xfwm4's compositor and ~48-53 fps without it (size-independent).
+* 1080p HEVC zero-copy runs at ~34-36 fps on this board; the limit is the GPU
+  sampling the decoder's dma-buf, not the X server or vsync (measured with
+  `MOONLIGHT_ZC_BREAKDOWN=1`; see `docs/h618-zero-copy.md`).  The compositor
+  costs a further ~10 ms/frame, so keep it off while streaming.
 
  [![Build](https://img.shields.io/github/actions/workflow/status/moonlight-stream/moonlight-embedded/build.yml?branch=master)](https://github.com/moonlight-stream/moonlight-embedded/actions/workflows/build.yml?query=branch%3Amaster) [Nightly Build Downloads](https://nightly.link/moonlight-stream/moonlight-embedded/workflows/build/master)
 
