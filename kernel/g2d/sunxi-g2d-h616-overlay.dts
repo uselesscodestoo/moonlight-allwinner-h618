@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /dts-v1/;
 /plugin/;
 / {
@@ -5,12 +6,14 @@
     fragment@0 {
         target-path = "/soc";
         __overlay__ {
+            #address-cells = <1>;
+            #size-cells = <1>;
             g2d: g2d@1480000 {
                 compatible = "allwinner,sunxi-g2d";
                 reg = <0x01480000 0x3ffff>;
                 interrupts = <0 90 4>;
-                clocks = <&ccu 33>;        /* CLK_G2D: verified 33 in sun50i-h616-ccu.h */
-                clock-names = "g2d";
+                clocks = <&ccu 33>, <&ccu 34>;  /* CLK_G2D, CLK_BUS_G2D (h616-ccu.h) */
+                clock-names = "g2d", "bus";
                 status = "okay";
             };
         };

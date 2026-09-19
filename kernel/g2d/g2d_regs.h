@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 #ifndef G2D_REGS_H
 #define G2D_REGS_H
 
@@ -63,7 +64,8 @@
 #define VS_Y_VCOEF0     (G2D_VSU + 0x300)
 #define VS_C_HCOEF0     (G2D_VSU + 0x400)
 
-#define G2D_FMT_NV12      0x28
-#define G2D_FMT_NV21_ALT  0x29
-#define G2D_FMT_XRGB8888  0x04
+#define G2D_FMT_NV12                  0x28
+/* 0x29: UV-plane interleave order (NV12 vs NV21) is unverified on this HW. */
+#define G2D_FMT_YUV420_UVC_U1V1U0V0   0x29
+#define G2D_FMT_XRGB8888              0x04
 #endif

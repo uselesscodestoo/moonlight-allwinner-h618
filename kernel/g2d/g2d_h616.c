@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/of.h>
@@ -13,9 +14,12 @@ struct g2d_dev {
     struct device *dev;
     void __iomem *base;
     struct clk *clk;
+    struct clk *clk_bus;
     int irq;
     struct completion done;
     struct mutex lock;
+    int open_count;
+    struct miscdevice misc;
 };
 
 static struct g2d_dev *g2d;
@@ -43,8 +47,27 @@ static irqreturn_t g2d_irq(int irq, void *data)
     return IRQ_NONE;
 }
 
-static int g2d_open(struct inode *inode, struct file *filp) { return 0; }
-static int g2d_release(struct inode *inode, struct file *filp) { return 0; }
+static int g2d_open(struct inode *inode, struct file *filp)
+{
+    struct miscdevice *misc = filp->private_data;
+    struct g2d_dev *g = container_of(misc, struct g2d_dev, misc);
+
+    mutex_lock(&g->lock);
+    g->open_count++;
+    mutex_unlock(&g->lock);
+    return 0;
+}
+
+static int g2d_release(struct inode *inode, struct file *filp)
+{
+    struct miscdevice *misc = filp->private_data;
+    struct g2d_dev *g = container_of(misc, struct g2d_dev, misc);
+
+    mutex_lock(&g->lock);
+    g->open_count--;
+    mutex_unlock(&g->lock);
+    return 0;
+}
 
 static long g2d_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
@@ -57,8 +80,6 @@ static const struct file_operations g2d_fops = {
     .unlocked_ioctl = g2d_ioctl,
 };
 
-static struct miscdevice g2d_misc = { .minor = MISC_DYNAMIC_MINOR, .name = "g2d", .fops = &g2d_fops };
-
 static int g2d_probe(struct platform_device *pdev)
 {
     struct g2d_dev *g;
@@ -67,29 +88,90 @@ static int g2d_probe(struct platform_device *pdev)
     g = devm_kzalloc(&pdev->dev, sizeof(*g), GFP_KERNEL);
     if (!g) return -ENOMEM;
     g->dev = &pdev->dev;
-    g->base = devm_platform_ioremap_resource(pdev, 0);
-    if (IS_ERR(g->base)) return PTR_ERR(g->base);
-    g->clk = devm_clk_get(&pdev->dev, "g2d");
-    if (IS_ERR(g->clk)) return dev_err_probe(&pdev->dev, PTR_ERR(g->clk), "clk\n");
-    ret = clk_prepare_enable(g->clk);
-    if (ret) return ret;
-    g->irq = platform_get_irq(pdev, 0);
-    if (g->irq < 0) { clk_disable_unprepare(g->clk); return g->irq; }
-    ret = devm_request_irq(&pdev->dev, g->irq, g2d_irq, IRQF_TRIGGER_HIGH, "g2d", g);
-    if (ret) { clk_disable_unprepare(g->clk); return ret; }
+
     mutex_init(&g->lock);
     init_completion(&g->done);
-    g2d_hw_init(g);
-    ret = misc_register(&g2d_misc);
-    if (ret) { clk_disable_unprepare(g->clk); return ret; }
+
+    g->base = devm_platform_ioremap_resource(pdev, 0);
+    if (IS_ERR(g->base)) return PTR_ERR(g->base);
+
+    g->clk = devm_clk_get(&pdev->dev, "g2d");
+    if (IS_ERR(g->clk))
+        return dev_err_probe(&pdev->dev, PTR_ERR(g->clk), "failed to get g2d clock\n");
+    g->clk_bus = devm_clk_get(&pdev->dev, "bus");
+    if (IS_ERR(g->clk_bus))
+        return dev_err_probe(&pdev->dev, PTR_ERR(g->clk_bus), "failed to get bus clock\n");
+
+    ret = clk_prepare_enable(g->clk);
+    if (ret)
+        return dev_err_probe(&pdev->dev, ret, "failed to enable g2d clock\n");
+    ret = clk_prepare_enable(g->clk_bus);
+    if (ret) {
+        clk_disable_unprepare(g->clk);
+        return dev_err_probe(&pdev->dev, ret, "failed to enable bus clock\n");
+    }
+
+    g->irq = platform_get_irq(pdev, 0);
+    if (g->irq < 0) {
+        ret = g->irq;
+        goto err_clk;
+    }
+    ret = devm_request_irq(&pdev->dev, g->irq, g2d_irq, 0, "g2d", g);
+    if (ret)
+        goto err_clk;
+
+    /* Publish the instance before the chrdev can be opened. */
+    platform_set_drvdata(pdev, g);
+    g->misc.minor = MISC_DYNAMIC_MINOR;
+    g->misc.name = "g2d";
+    g->misc.fops = &g2d_fops;
     g2d = g;
+
+    g2d_hw_init(g);
+
+    ret = misc_register(&g->misc);
+    if (ret) {
+        g2d = NULL;
+        platform_set_drvdata(pdev, NULL);
+        goto err_clk;
+    }
+
     dev_info(&pdev->dev, "g2d ready\n");
     return 0;
+
+err_clk:
+    clk_disable_unprepare(g->clk_bus);
+    clk_disable_unprepare(g->clk);
+    return ret;
 }
 
 static void g2d_remove(struct platform_device *pdev)
 {
-    misc_deregister(&g2d_misc);
+    struct g2d_dev *g = platform_get_drvdata(pdev);
+
+    if (!g)
+        return;
+
+    /* platform_driver.remove() returns void, so a busy device cannot be
+     * failed with -EBUSY; refuse the teardown instead of tearing down a
+     * device that may still be in use. */
+    mutex_lock(&g->lock);
+    if (g->open_count) {
+        mutex_unlock(&g->lock);
+        dev_err(&pdev->dev, "g2d busy (%d open), refusing remove\n",
+                g->open_count);
+        return;
+    }
+    mutex_unlock(&g->lock);
+
+    misc_deregister(&g->misc);
+    g2d_wr(g, G2D_SCLK_GATE, 0x0);
+    g2d_wr(g, G2D_HCLK_GATE, 0x0);
+    g2d_wr(g, G2D_AHB_RESET, 0x0);
+    clk_disable_unprepare(g->clk_bus);
+    clk_disable_unprepare(g->clk);
+    platform_set_drvdata(pdev, NULL);
+    g2d = NULL;
 }
 
 static const struct of_device_id g2d_of[] = { { .compatible = "allwinner,sunxi-g2d" }, {} };
@@ -100,4 +182,5 @@ static struct platform_driver g2d_driver = {
 };
 module_platform_driver(g2d_driver);
 MODULE_LICENSE("GPL");
+MODULE_AUTHOR("OpenCode");
 MODULE_DESCRIPTION("Allwinner H616 G2D (prototype)");
