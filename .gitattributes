@@ -1,0 +1,2 @@
+# Linux/embedded target: keep LF in the repository and in the working tree.
+* text=auto eol=lf
