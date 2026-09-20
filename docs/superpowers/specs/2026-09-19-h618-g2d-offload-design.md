@@ -1,7 +1,8 @@
 # H618 G2D offload: NV12 -> RGB, then DE/KMS scanout
 
 Date: 2026-09-19
-Status: draft (pending review)
+Status: **Closed (2026-09-20) — Phase 1 aborted: the G2D core cannot be brought
+up from public information on this board.** See "Outcome" at the end.
 Worktree / branch: `F:\temp\wt-60fps` @ `h618-60fps`
 Scope of first implementation: **Phase 1 only** (kernel driver prototype + standalone proof).
 
@@ -145,3 +146,61 @@ with double buffering. No X server needed; the test takes the CRTC directly
 
 Moonlight, input, audio, X integration, 4K, scaling/rotation, upstream
 submission. Recording the GPU zero-copy path as the fallback.
+
+---
+
+## 9. Outcome (2026-09-20) — closed, core not reachable
+
+Implemented and verified on the board (commits `cd47b0d`, `b2ecd79`, `da98f44`,
+`3854ea3`):
+
+* out-of-tree module + DT overlay -> `/dev/g2d`; clocks `g2d`/`bus-g2d`/`mbus-g2d`
+  at 300/200/400 MHz; dma-buf import (CMA accepted, `system` heap rejected
+  `-EINVAL`); prototype `G2D_IOC_BLT`/`G2D_IOC_PING`.
+* **A real mainline gap found and worked around:** the G2D block is held in
+  reset by the CCU (`0x0300163C` bit 16, active-low) and mainline
+  `ccu-sun50i-h616.c` has **no `RST_BUS_G2D`**, so nothing releases it. Our
+  driver deasserts it via an out-of-tree CCU page mapping (prototype-only).
+  After that the G2D **TOP** registers (`0x00/0x04/0x08/0x0C`) work.
+
+**Blocker:** every **sub-block** register (MIXER `0x100`, BLD `0x400`, V0
+`0x800`, UI `0x1000/0x1800/0x2000`, WB `0x3000`, VSU `0x8000`, ROT `0x28000`)
+reads 0 and drops writes. A blit is impossible, so `G2D_IOC_BLT` can import but
+never runs.
+
+Exhausted without success (hardware + vendor source, all with evidence):
+
+* CCU reset polarity, all gate combinations, `G2D_CLK_REG` source/divider over
+  the whole space (raw `/dev/mem` **and** through the clock API, including pinning
+  the vendor parent `pll-periph0-2x` at 300 MHz);
+* in-block `G2D_SCLK_GATE`/`G2D_HCLK_GATE`/`G2D_AHB_RESET` over all combinations,
+  `G2D_SCLK_DIV`, MBUS bit 10, IOMMU bypass, an exhaustive CCU-gate sweep;
+* a full search of the vendor sources (`orangepi-xunlong/u-boot-orangepi`,
+  prebuilt BL31/OP-TEE, `linux-orangepi` `disp2`) and a raw byte-search of the
+  boot binaries: **nothing initialises G2D** — no hidden register, no power
+  domain, no TZPC, no DE33-style quirk. The vendor G2D driver is exactly what we
+  reproduced.
+
+Conclusion: the sub-block register domain needs an initialisation that is absent
+from every public source (and from the vendor boot binaries). The G2D is present
+(H618 datasheet §2.5.3) but its core does not come alive on a mainline boot. The
+only remaining way to find the missing step is a **live register trace from a
+vendor-booted unit** (boot the vendor BSP image on the board and diff the G2D/CCU
+register set against mainline) — an empirical observation, but it needs a vendor
+image on a separate SD card. Deferred.
+
+### Board state / rollback
+
+The board keeps a harmless overlay (`user_overlays=spi1-gpio-cs sunxi-g2d-h616`)
+and the non-functional source in this branch (`kernel/g2d/`, HEAD `3854ea3`).
+To undo: `sudo rmmod sunxi-g2d-h616` (not built-in), remove `sunxi-g2d-h616` from
+`user_overlays`, delete `/boot/overlay-user/sunxi-g2d-h616.dtbo`, reboot. The
+mainline kernel was never reflashed.
+
+### Net result for the 60 fps goal
+
+All three hardware offloads are closed on mainline: the **GPU** path is capped at
+~34 fps (external dma-buf sampling), the **DE33 VI** YUV path needs the unmerged
+DE33 scaler/RCQ, and **G2D** cannot be brought up. The practical state is the
+two-plane zero-copy path at ~34 fps 1080p (see the companion repository's
+`docs/h618-zero-copy.md`).

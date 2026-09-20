@@ -1,5 +1,10 @@
 # H618 G2D offload — Phase 1 implementation plan
 
+> **Status (2026-09-20): abandoned after Task 3.** Tasks 1–3 done and committed;
+> the G2D **sub-block registers never come alive** on a mainline boot and no
+> public/vendor source reveals the missing init. See the spec's "Outcome"
+> (`../specs/2026-09-19-h618-g2d-offload-design.md`). Task 4 was not committed.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: use superpowers:subagent-driven-development. Steps use `- [ ]`.
 
 **Goal:** On the Orange Pi Zero 2W (H616), prove that G2D can convert a 1920x1080 NV12 buffer (synthetic first, then the decoder's dma-buf) to XRGB8888 and that the display engine scans it at 60 fps with near-zero CPU.

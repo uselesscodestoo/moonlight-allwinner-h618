@@ -142,6 +142,15 @@ Levers that were investigated and closed:
   still unmerged (as of 2026-09-19) and no scaler/RCQ enablement exists in any
   tree, including the Sipeed LonganPi-3H SDK (whose `0010` is clock plumbing and
   whose `0011` is an older bring-up that merely re-adds the broken YUV).
+* **Use the SoC's G2D (2D engine) to convert NV12 -> RGB and scan that**: also
+  closed.  The G2D is present (H618 Datasheet v1.1 §2.5.3) but on a mainline boot
+  only its TOP wrapper responds - every sub-block register (MIXER/BLD/V0/WB/VSU)
+  reads 0.  Mainline `ccu-sun50i-h616.c` also lacks the `RST_BUS_G2D` reset
+  (CCU `0x63C` bit 16) that must be released.  With the reset released and all
+  clocks/PLLs/gates set exactly as the vendor BSP does, the core still does not
+  decode, and no public or vendor source (U-Boot, BL31, disp2, the vendor G2D
+  driver) reveals the missing initialisation.  Full record:
+  `superpowers/specs/2026-09-19-h618-g2d-offload-design.md` (§9).
 
 A remaining untried idea is a GLES3.1 **compute** shader reading the external
 memory with coalesced loads (potentially much better memory-level parallelism
