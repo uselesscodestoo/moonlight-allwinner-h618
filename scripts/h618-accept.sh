@@ -37,9 +37,13 @@ xset s noblank 2>/dev/null; xset dpms force on 2>/dev/null
 failures=0
 
 report() {
-  name="$1"; log="$2"; strict="$3"
+  name="$1"; log="$2"; strict="$3"; marker="$4"
   echo "----- $name -----"
-  grep -aE "nv12 .*import|EGL: vsync|renderer=" "$log" | head -2
+  grep -aE "nv12 .*import|nv12 external|EGL: vsync|renderer=" "$log" | head -3
+  if [ -n "$marker" ] && ! grep -aqF "$marker" "$log"; then
+    echo "  FAIL(path marker missing: $marker)"
+    return 1
+  fi
   grep -a "x11: " "$log" | awk -v strict="$strict" '
     { for (i=1;i<=NF;i++) if ($i ~ /^c2=/)  { v=$i; sub(/^c2=/,"",v);  sub(/ms$/,"",v); s+=v; n++ }
       for (i=1;i<=NF;i++) if ($i ~ /^delta_fps=/) { w=$i; sub(/^delta_fps=/,"",w); fs+=w; fn++ }
@@ -60,7 +64,7 @@ report() {
 }
 
 run() {
-  name="$1"; strict="$2"; shift 2
+  name="$1"; strict="$2"; marker="$3"; shift 3
   timeout 10 "$ML" quit "$HOST" >/dev/null 2>&1
   pkill -x "$MLNAME" 2>/dev/null; sleep 1
   log="/tmp/accept_$name.log"
@@ -71,13 +75,36 @@ run() {
   timeout 10 "$ML" quit "$HOST" >/dev/null 2>&1
   sleep 2
   kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
-  if ! report "$name" "$log" "$strict"; then
+  if ! report "$name" "$log" "$strict" "$marker"; then
     failures=$((failures + 1))
   fi
 }
 
 echo "compositing=$(xfconf-query -c xfwm4 -p /general/use_compositing 2>/dev/null)"
-run default 1
-run trivial 0 MOONLIGHT_ZC_TRIVIAL=1
+CASES="${CASES:-default trivial}"
+processed=0
+for case_name in $CASES; do
+  processed=1
+  case "$case_name" in
+    default)
+      run default 1 "EGL: nv12 two-plane import"
+      ;;
+    trivial)
+      run trivial 0 "EGL: nv12 two-plane import" MOONLIGHT_ZC_TRIVIAL=1
+      ;;
+    external)
+      run external 1 "EGL: nv12 external path active" \
+          MOONLIGHT_ZC_EXTERNAL=1 MOONLIGHT_ZC_BREAKDOWN=1
+      ;;
+    *)
+      echo "accept: unknown case '$case_name'" >&2
+      failures=$((failures + 1))
+      ;;
+  esac
+done
+if [ "$processed" -eq 0 ]; then
+  echo "accept: no cases selected" >&2
+  failures=$((failures + 1))
+fi
 echo "DONE ($failures failing configuration(s))"
 [ "$failures" -eq 0 ]
