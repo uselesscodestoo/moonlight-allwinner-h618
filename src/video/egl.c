@@ -29,10 +29,19 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <string.h>
 #include <pthread.h>
 #include <time.h>
 #include <unistd.h>
+
+#ifdef __linux__
+#include <fcntl.h>
+#include <sys/ioctl.h>
+#include <sys/mman.h>
+#include <linux/dma-buf.h>
+#include <linux/dma-heap.h>
+#endif
 
 #ifndef DRM_FORMAT_R8
 #define DRM_FORMAT_R8 0x20203852 /* 'R', '8', ' ', ' ' */
@@ -40,6 +49,28 @@
 
 #ifndef DRM_FORMAT_GR88
 #define DRM_FORMAT_GR88 0x38385247 /* 'G', 'R', '8', '8' */
+#endif
+
+#ifndef DRM_FORMAT_NV12
+#define DRM_FORMAT_NV12 0x3231564e /* 'N', 'V', '1', '2' */
+#endif
+#ifndef GL_TEXTURE_EXTERNAL_OES
+#define GL_TEXTURE_EXTERNAL_OES 0x8D65
+#endif
+#ifndef EGL_YUV_COLOR_SPACE_HINT_EXT
+#define EGL_YUV_COLOR_SPACE_HINT_EXT 0x327B
+#define EGL_SAMPLE_RANGE_HINT_EXT 0x327C
+#define EGL_YUV_CHROMA_HORIZONTAL_SITING_HINT_EXT 0x327D
+#define EGL_YUV_CHROMA_VERTICAL_SITING_HINT_EXT 0x327E
+#define EGL_ITU_REC601_EXT 0x327F
+#define EGL_ITU_REC709_EXT 0x3280
+#define EGL_YUV_FULL_RANGE_EXT 0x3282
+#define EGL_YUV_NARROW_RANGE_EXT 0x3283
+#define EGL_YUV_CHROMA_SITING_0_EXT 0x3284
+#endif
+#ifndef EGL_DMA_BUF_PLANE1_MODIFIER_LO_EXT
+#define EGL_DMA_BUF_PLANE1_MODIFIER_LO_EXT 0x3445
+#define EGL_DMA_BUF_PLANE1_MODIFIER_HI_EXT 0x3446
 #endif
 
 /* Not all GLES3 headers declare this extension entry point. */
@@ -91,6 +122,19 @@ static const char* dmabuf_vertex_source = "\
 void main() {\n\
   vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));\n\
   gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);\n\
+}\n";
+
+static const char* nv12_external_fragment_source = "\
+#version 300 es\n\
+#extension GL_OES_EGL_image_external_essl3 : require\n\
+precision highp float;\n\
+uniform samplerExternalOES u_tex;\n\
+uniform vec2 u_view_size;\n\
+layout(location = 0) out vec4 outColor;\n\
+void main() {\n\
+  vec2 uv = vec2(gl_FragCoord.x / u_view_size.x,\n\
+                 1.0 - gl_FragCoord.y / u_view_size.y);\n\
+  outColor = texture(u_tex, uv);\n\
 }\n";
 
 static const char* dmabuf_fragment_source = "\
@@ -256,6 +300,18 @@ static struct {
 } dmabuf_nv12[DMABUF_MAX_IMAGES];
 static int dmabuf_nv12_count;
 
+static int nv12_external_requested, nv12_external_available;
+static GLuint nv12_external_program, nv12_external_texture;
+static GLint nv12_external_tex_uniform, nv12_external_view_uniform;
+static int nv12_external_active_shown, nv12_external_draw_failures;
+static int nv12_external_import_failures;
+static struct {
+  int fd, width, height, pitch, uv_offset;
+  int use_bt709, full_range;
+  EGLImageKHR image;
+} dmabuf_nv12_external[DMABUF_MAX_IMAGES];
+static int dmabuf_nv12_external_count;
+
 static int zc_breakdown = -1;
 static unsigned zc_bd_frames, zc_img_hits, zc_img_creates;
 static double zc_bd_img, zc_bd_render, zc_bd_swap;
@@ -264,6 +320,34 @@ static double zc_now_ms(void) {
   struct timespec ts;
   clock_gettime(CLOCK_MONOTONIC, &ts);
   return ts.tv_sec * 1000.0 + ts.tv_nsec / 1000000.0;
+}
+
+static void zc_record_breakdown(double bd0, double bd1,
+                                double bd2, double bd3) {
+  if (!zc_breakdown)
+    return;
+  zc_bd_img += bd1 - bd0;
+  zc_bd_render += bd2 - bd1;
+  zc_bd_swap += bd3 - bd2;
+  if (++zc_bd_frames == 30) {
+    fprintf(stderr, "EGL: zc breakdown img=%.2fms render+finish=%.2fms swap=%.2fms "
+                    "creates=%u hits=%u\n",
+            zc_bd_img / 30, zc_bd_render / 30, zc_bd_swap / 30,
+            zc_img_creates, zc_img_hits);
+    zc_bd_img = zc_bd_render = zc_bd_swap = 0;
+    zc_bd_frames = 0;
+  }
+}
+
+static int has_gl_extension(const char* wanted) {
+  GLint count = 0;
+  glGetIntegerv(GL_NUM_EXTENSIONS, &count);
+  for (GLint i = 0; i < count; i++) {
+    const char* extension = (const char*)glGetStringi(GL_EXTENSIONS, i);
+    if (extension && strcmp(extension, wanted) == 0)
+      return 1;
+  }
+  return 0;
 }
 
 static EGLImageKHR create_single_plane_image(int fd, int fourcc, int pitch,
@@ -326,6 +410,73 @@ static int dmabuf_get_nv12(int fd, int height, int pitch,
   *out_y = y;
   *out_uv = uv;
   return 0;
+}
+
+static EGLImageKHR dmabuf_get_nv12_external(int fd, int frame_width,
+                                            int frame_height, int pitch,
+                                            int uv_offset) {
+  for (int i = 0; i < dmabuf_nv12_external_count; i++) {
+    if (dmabuf_nv12_external[i].fd == fd &&
+        dmabuf_nv12_external[i].width == frame_width &&
+        dmabuf_nv12_external[i].height == frame_height &&
+        dmabuf_nv12_external[i].pitch == pitch &&
+        dmabuf_nv12_external[i].uv_offset == uv_offset &&
+        dmabuf_nv12_external[i].use_bt709 == color_use_bt709 &&
+        dmabuf_nv12_external[i].full_range == color_full_range) {
+      zc_img_hits++;
+      return dmabuf_nv12_external[i].image;
+    }
+  }
+  if (dmabuf_nv12_external_count >= DMABUF_MAX_IMAGES)
+    return EGL_NO_IMAGE_KHR;
+
+  EGLint attrs[] = {
+    EGL_WIDTH, frame_width,
+    EGL_HEIGHT, frame_height,
+    EGL_LINUX_DRM_FOURCC_EXT, DRM_FORMAT_NV12,
+    EGL_DMA_BUF_PLANE0_FD_EXT, fd,
+    EGL_DMA_BUF_PLANE0_OFFSET_EXT, 0,
+    EGL_DMA_BUF_PLANE0_PITCH_EXT, pitch,
+    EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT, 0,
+    EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT, 0,
+    EGL_DMA_BUF_PLANE1_FD_EXT, fd,
+    EGL_DMA_BUF_PLANE1_OFFSET_EXT, uv_offset,
+    EGL_DMA_BUF_PLANE1_PITCH_EXT, pitch,
+    EGL_DMA_BUF_PLANE1_MODIFIER_LO_EXT, 0,
+    EGL_DMA_BUF_PLANE1_MODIFIER_HI_EXT, 0,
+    EGL_YUV_COLOR_SPACE_HINT_EXT, color_use_bt709 ? EGL_ITU_REC709_EXT : EGL_ITU_REC601_EXT,
+    EGL_SAMPLE_RANGE_HINT_EXT, color_full_range ? EGL_YUV_FULL_RANGE_EXT : EGL_YUV_NARROW_RANGE_EXT,
+    EGL_YUV_CHROMA_HORIZONTAL_SITING_HINT_EXT, EGL_YUV_CHROMA_SITING_0_EXT,
+    EGL_YUV_CHROMA_VERTICAL_SITING_HINT_EXT, EGL_YUV_CHROMA_SITING_0_EXT,
+    EGL_NONE
+  };
+  EGLImageKHR image = p_eglCreateImageKHR(display, EGL_NO_CONTEXT,
+                                         EGL_LINUX_DMA_BUF_EXT, NULL, attrs);
+  if (image == EGL_NO_IMAGE_KHR && nv12_external_import_failures < 5) {
+    nv12_external_import_failures++;
+    fprintf(stderr, "EGL: nv12 external image(fd=%d) failed 0x%x\n", fd, eglGetError());
+  }
+
+  /* Keep failed imports too, so a rejected layout is not retried each frame. */
+  int i = dmabuf_nv12_external_count++;
+  dmabuf_nv12_external[i].fd = fd;
+  dmabuf_nv12_external[i].width = frame_width;
+  dmabuf_nv12_external[i].height = frame_height;
+  dmabuf_nv12_external[i].pitch = pitch;
+  dmabuf_nv12_external[i].uv_offset = uv_offset;
+  dmabuf_nv12_external[i].use_bt709 = color_use_bt709;
+  dmabuf_nv12_external[i].full_range = color_full_range;
+  dmabuf_nv12_external[i].image = image;
+  zc_img_creates++;
+  return image;
+}
+
+static void dmabuf_nv12_external_reset(void) {
+  for (int i = 0; i < dmabuf_nv12_external_count; i++) {
+    if (p_eglDestroyImageKHR && dmabuf_nv12_external[i].image != EGL_NO_IMAGE_KHR)
+      p_eglDestroyImageKHR(display, dmabuf_nv12_external[i].image);
+  }
+  dmabuf_nv12_external_count = 0;
 }
 
 static void dmabuf_nv12_reset(void) {
@@ -524,6 +675,7 @@ static GLuint compile_program(const char* vs_src, const char* fs_src, const char
     char log[2048];
     glGetProgramInfoLog(prog, sizeof(log), NULL, log);
     fprintf(stderr, "EGL: %s program link failed:\n%s\n", name, log);
+    glDeleteProgram(prog);
     return 0;
   }
 
@@ -612,6 +764,32 @@ void egl_init(EGLNativeDisplayType native_display, NativeWindowType native_windo
   p_eglCreateImageKHR = (PFNEGLCREATEIMAGEKHRPROC)eglGetProcAddress("eglCreateImageKHR");
   p_eglDestroyImageKHR = (PFNEGLDESTROYIMAGEKHRPROC)eglGetProcAddress("eglDestroyImageKHR");
   p_glEGLImageTargetTexture2DOES = (moonlight_eglimage_target_texture2does)eglGetProcAddress("glEGLImageTargetTexture2DOES");
+
+  nv12_external_requested = getenv("MOONLIGHT_ZC_EXTERNAL") != NULL;
+  nv12_external_available = 0;
+  nv12_external_active_shown = 0;
+  nv12_external_draw_failures = 0;
+  nv12_external_import_failures = 0;
+  if (nv12_external_requested) {
+    if (getenv("MOONLIGHT_ZC_COMPUTE")) {
+      fprintf(stderr, "EGL: MOONLIGHT_ZC_EXTERNAL and MOONLIGHT_ZC_COMPUTE are mutually exclusive; disabling external path\n");
+    } else if (p_eglCreateImageKHR && p_eglDestroyImageKHR &&
+               p_glEGLImageTargetTexture2DOES &&
+               has_gl_extension("GL_OES_EGL_image_external") &&
+               has_gl_extension("GL_OES_EGL_image_external_essl3")) {
+      nv12_external_program = compile_program(dmabuf_vertex_source,
+                                               nv12_external_fragment_source,
+                                               "nv12-external");
+      if (nv12_external_program) {
+        nv12_external_tex_uniform = glGetUniformLocation(nv12_external_program, "u_tex");
+        nv12_external_view_uniform = glGetUniformLocation(nv12_external_program, "u_view_size");
+        glGenTextures(1, &nv12_external_texture);
+        nv12_external_available = nv12_external_texture != 0;
+      }
+    }
+    if (!nv12_external_available)
+      fprintf(stderr, "EGL: native NV12 external path unavailable; using two-plane path\n");
+  }
 
   if (p_eglCreateImageKHR && p_glEGLImageTargetTexture2DOES) {
     dmabuf_program = compile_program(dmabuf_vertex_source, dmabuf_fragment_source, "dmabuf-detile");
@@ -796,11 +974,326 @@ int egl_draw_dmabuf(int dmabuf_fd, unsigned int size, int frame_width, int frame
   return 0;
 }
 
-/* Zero-copy render for a *linear* NV12 capture buffer.  The luma plane is
- * imported as an R8 image and the interleaved chroma plane as a GR88 image,
- * each with its own integer texelFetch.  uv_offset is a byte offset handed
- * straight to EGL; the uv_offset % pitch check is only a sanity check that
- * the chroma plane starts on a luma-row boundary. */
+static int draw_dmabuf_nv12_external(int fd, unsigned int size,
+                                     int frame_width, int frame_height,
+                                     int pitch, int uv_offset,
+                                     int surf_w, int surf_h,
+                                     double* import_done) {
+  if (!nv12_external_available || fd < 0 || frame_width <= 0 || frame_height <= 0 ||
+      surf_w <= 0 || surf_h <= 0 || pitch <= 0 || pitch < frame_width ||
+      (uint64_t)pitch < 2 * (((uint64_t)frame_width + 1) / 2) ||
+      uv_offset < 0 || uv_offset % pitch != 0 ||
+      (uint64_t)uv_offset < (uint64_t)pitch * frame_height)
+    return -1;
+
+  uint64_t required = (uint64_t)uv_offset +
+                      (uint64_t)pitch * (((uint64_t)frame_height + 1) / 2);
+  if (required > size)
+    return -1;
+
+  EGLImageKHR image = dmabuf_get_nv12_external(fd, frame_width, frame_height,
+                                              pitch, uv_offset);
+  if (import_done)
+    *import_done = zc_now_ms();
+  if (image == EGL_NO_IMAGE_KHR)
+    return -1;
+
+  while (glGetError() != GL_NO_ERROR) {}
+  glUseProgram(nv12_external_program);
+  glActiveTexture(GL_TEXTURE0);
+  glBindTexture(GL_TEXTURE_EXTERNAL_OES, nv12_external_texture);
+  p_glEGLImageTargetTexture2DOES(GL_TEXTURE_EXTERNAL_OES, image);
+  glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+  glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+  glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+  glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+  glUniform1i(nv12_external_tex_uniform, 0);
+  glUniform2f(nv12_external_view_uniform, (GLfloat)surf_w, (GLfloat)surf_h);
+  glViewport(0, 0, surf_w, surf_h);
+  glDisable(GL_BLEND);
+  glDisableVertexAttribArray(0);
+  glDrawArrays(GL_TRIANGLES, 0, 3);
+  glBindTexture(GL_TEXTURE_EXTERNAL_OES, 0);
+  return glGetError() == GL_NO_ERROR ? 0 : -1;
+}
+
+#ifdef __linux__
+static int alloc_cma_dmabuf(size_t size, void** map_out) {
+  int heap = open("/dev/dma_heap/default_cma_region", O_RDWR | O_CLOEXEC);
+  struct dma_heap_allocation_data alloc = {0};
+  if (heap < 0) {
+    perror("SELFTEST: open CMA heap");
+    return -1;
+  }
+  alloc.len = size;
+  alloc.fd_flags = O_RDWR | O_CLOEXEC;
+  if (ioctl(heap, DMA_HEAP_IOCTL_ALLOC, &alloc) < 0) {
+    perror("SELFTEST: allocate CMA dma-buf");
+    close(heap);
+    return -1;
+  }
+  close(heap);
+  *map_out = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, (int)alloc.fd, 0);
+  if (*map_out == MAP_FAILED) {
+    perror("SELFTEST: map CMA dma-buf");
+    close((int)alloc.fd);
+    return -1;
+  }
+  return (int)alloc.fd;
+}
+
+static int dmabuf_sync(int fd, uint64_t flags) {
+  struct dma_buf_sync sync = { .flags = flags };
+  return ioctl(fd, DMA_BUF_IOCTL_SYNC, &sync);
+}
+
+static int external_check_pixel(const char* name, const uint8_t* pixels,
+                                int w, int x, int y, int r, int g, int b) {
+  const uint8_t* pixel = pixels + 4 * (y * w + x);
+  if (abs((int)pixel[0] - r) <= 3 && abs((int)pixel[1] - g) <= 3 &&
+      abs((int)pixel[2] - b) <= 3)
+    return 0;
+  fprintf(stderr, "SELFTEST: %s pixel (%d,%d) FAIL got=(%d,%d,%d) expected=(%d,%d,%d)\n",
+          name, x, y, pixel[0], pixel[1], pixel[2], r, g, b);
+  return -1;
+}
+#endif
+
+/* Exercise the same import, color hints, texture sampling and orientation as
+ * streaming, without a swap or a fallback to the two-plane renderer. */
+int egl_nv12_external_selftest(void) {
+#ifndef __linux__
+  printf("SELFTEST: NV12 external SKIP (non-Linux)\n");
+  return 77;
+#else
+  static const struct external_case {
+    const char* name;
+    int use709, full;
+    uint8_t y, u, v;
+    uint8_t expect_r, expect_g, expect_b;
+  } external_cases[] = {
+    { "601 narrow black", 0,0, 16,128,128, 0,0,0 },
+    { "601 narrow white", 0,0, 235,128,128, 255,255,255 },
+    { "601 narrow grey",  0,0, 126,128,128, 128,128,128 },
+    { "601 narrow red",   0,0, 81,90,240, 255,0,0 },
+    { "709 narrow red",   1,0, 63,102,240, 255,1,0 },
+    { "601 full grey",    0,1, 128,128,128, 128,128,128 },
+    { "601 full dark", 0,1, 64,128,128, 64,64,64 },
+  };
+  /* Source order: top-left, top-right, bottom-left, bottom-right. */
+  static const uint8_t quadrant_yuv[4][3] = {
+    {81,90,240}, {145,54,34}, {41,240,110}, {126,128,128}
+  };
+  static const uint8_t quadrant_rgb[4][3] = {
+    {255,0,0}, {0,255,1}, {0,0,255}, {128,128,128}
+  };
+  static const int quadrant_probes[][2] = {
+    {16,48}, {48,48}, {16,16}, {48,16},
+    {31,16}, {32,16}, {31,48}, {32,48},
+    {16,31}, {16,32}, {48,31}, {48,32}
+  };
+  const int constant_count = sizeof(external_cases) / sizeof(external_cases[0]);
+  const size_t buffer_size = 6144;
+  uint8_t pixels[64 * 64 * 4]; /* Also holds the 1280x2 scaled output. */
+  void* map = MAP_FAILED;
+  int fd = -1, cpu_writing = 0, rc = 1;
+  const char* skip_reason = NULL;
+  GLuint fbo = 0, rbo = 0;
+  GLint previous_draw_fbo, previous_read_fbo, previous_rbo, previous_viewport[4];
+  int previous_use709 = color_use_bt709, previous_full = color_full_range;
+  EGLDisplay previous_display = EGL_NO_DISPLAY;
+  EGLContext previous_context = EGL_NO_CONTEXT;
+  EGLSurface previous_draw_surface = EGL_NO_SURFACE, previous_read_surface = EGL_NO_SURFACE;
+  bool acquired_context = false;
+
+  if (!nv12_external_available) {
+    printf("SELFTEST: NV12 external SKIP (extension or shader unavailable)\n");
+    return 77;
+  }
+  if (!current) {
+    previous_display = eglGetCurrentDisplay();
+    previous_context = eglGetCurrentContext();
+    previous_draw_surface = eglGetCurrentSurface(EGL_DRAW);
+    previous_read_surface = eglGetCurrentSurface(EGL_READ);
+    if (!eglMakeCurrent(display, surface, surface, context)) {
+      printf("SELFTEST: NV12 external SKIP (EGL context unavailable)\n");
+      return 77;
+    }
+    current = true;
+    acquired_context = true;
+  }
+
+  glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &previous_draw_fbo);
+  glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &previous_read_fbo);
+  glGetIntegerv(GL_RENDERBUFFER_BINDING, &previous_rbo);
+  glGetIntegerv(GL_VIEWPORT, previous_viewport);
+  glGenFramebuffers(1, &fbo);
+  glGenRenderbuffers(1, &rbo);
+  glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+  glBindRenderbuffer(GL_RENDERBUFFER, rbo);
+  glRenderbufferStorage(GL_RENDERBUFFER, GL_RGBA8, 64, 64);
+  glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, rbo);
+  if (!fbo || !rbo || glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE ||
+      glGetError() != GL_NO_ERROR) {
+    fprintf(stderr, "SELFTEST: RGBA8 framebuffer setup FAIL\n");
+    goto cleanup;
+  }
+
+  fd = alloc_cma_dmabuf(buffer_size, &map);
+  if (fd < 0) {
+    skip_reason = "CMA dma-buf allocation or mapping unavailable";
+    rc = 77;
+    goto cleanup;
+  }
+
+  for (int c = 0; c < constant_count + 2; c++) {
+    int quadrants = c == constant_count;
+    int scaled = c == constant_count + 1;
+    const struct external_case* test = c < constant_count ? &external_cases[c] : NULL;
+    const char* name = test ? test->name : quadrants ? "quadrants" : "scaled 1920->1280 detail";
+    int frame_w = scaled ? 1920 : 64, frame_h = scaled ? 2 : 64;
+    int view_w = scaled ? 1280 : 64, view_h = frame_h;
+    int uv_offset = scaled ? 3840 : 4096;
+    uint8_t* data = map;
+
+    egl_set_color_mode(test ? test->use709 : 0, test ? test->full : 0);
+    dmabuf_nv12_external_reset();
+    if (dmabuf_sync(fd, DMA_BUF_SYNC_START | DMA_BUF_SYNC_WRITE) < 0) {
+      perror("SELFTEST: DMA_BUF_SYNC_START WRITE");
+      skip_reason = "DMA_BUF_SYNC_START WRITE unavailable";
+      rc = 77;
+      goto cleanup;
+    }
+    cpu_writing = 1;
+    if (test) {
+      memset(data, test->y, 4096);
+      for (int i = 4096; i < 6144; i += 2) {
+        data[i] = test->u;
+        data[i + 1] = test->v;
+      }
+    } else if (quadrants) {
+      for (int y = 0; y < 64; y++)
+        for (int x = 0; x < 64; x++)
+          data[y * 64 + x] = quadrant_yuv[2 * (y >= 32) + (x >= 32)][0];
+      for (int y = 0; y < 32; y++) {
+        for (int x = 0; x < 64; x += 2) {
+          int q = 2 * (y >= 16) + (x >= 32);
+          data[4096 + y * 64 + x] = quadrant_yuv[q][1];
+          data[4096 + y * 64 + x + 1] = quadrant_yuv[q][2];
+        }
+      }
+    } else {
+      for (int y = 0; y < 2; y++)
+        for (int x = 0; x < 1920; x++)
+          data[y * 1920 + x] = (x & 1) ? 235 : 16;
+      memset(data + 3840, 128, 1920);
+    }
+    if (dmabuf_sync(fd, DMA_BUF_SYNC_END | DMA_BUF_SYNC_WRITE) < 0) {
+      perror("SELFTEST: DMA_BUF_SYNC_END WRITE");
+      skip_reason = "DMA_BUF_SYNC_END WRITE unavailable";
+      rc = 77;
+      goto cleanup;
+    }
+    cpu_writing = 0;
+
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    if (scaled) {
+      glBindRenderbuffer(GL_RENDERBUFFER, rbo);
+      glRenderbufferStorage(GL_RENDERBUFFER, GL_RGBA8, view_w, view_h);
+    }
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE ||
+        glGetError() != GL_NO_ERROR) {
+      fprintf(stderr, "SELFTEST: %s framebuffer setup FAIL\n", name);
+      goto cleanup;
+    }
+    if (draw_dmabuf_nv12_external(fd, buffer_size, frame_w, frame_h,
+                                   frame_w, uv_offset, view_w, view_h, NULL) != 0) {
+      /* A fresh negative cache entry identifies an import limitation. A valid
+       * imported image followed by a GL error is an actual renderer failure. */
+      if (dmabuf_nv12_external_count == 1 &&
+          dmabuf_nv12_external[0].image == EGL_NO_IMAGE_KHR) {
+        skip_reason = scaled ? "1920x2 CMA NV12 EGL import unavailable" :
+                               "64x64 CMA NV12 EGL import unavailable";
+        rc = 77;
+      } else {
+        fprintf(stderr, "SELFTEST: %s draw FAIL\n", name);
+      }
+      goto cleanup;
+    }
+    glReadPixels(0, 0, view_w, view_h, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    GLenum error = glGetError();
+    if (error != GL_NO_ERROR) {
+      fprintf(stderr, "SELFTEST: %s read pixels FAIL (GL error 0x%x)\n", name, error);
+      goto cleanup;
+    }
+
+    if (quadrants) {
+      for (unsigned int i = 0; i < sizeof(quadrant_probes) / sizeof(quadrant_probes[0]); i++) {
+        int x = quadrant_probes[i][0], y = quadrant_probes[i][1];
+        int q = 2 * (y < 32) + (x >= 32); /* glReadPixels starts at the bottom. */
+        if (external_check_pixel(name, pixels, view_w, x, y, quadrant_rgb[q][0],
+                                  quadrant_rgb[q][1], quadrant_rgb[q][2]) != 0)
+          goto cleanup;
+      }
+    } else {
+      for (int y = 0; y < view_h; y++) {
+        for (int x = 0; x < view_w; x++) {
+          int source_x = ((2 * x + 1) * 1920) / (2 * 1280);
+          int level = (source_x & 1) ? 255 : 0;
+          int r = test ? test->expect_r : level;
+          int g = test ? test->expect_g : level;
+          int b = test ? test->expect_b : level;
+          if (external_check_pixel(name, pixels, view_w, x, y, r, g, b) != 0)
+            goto cleanup;
+        }
+      }
+    }
+    printf("SELFTEST: %s OK\n", name);
+  }
+  rc = 0;
+
+cleanup:
+  if (cpu_writing)
+    dmabuf_sync(fd, DMA_BUF_SYNC_END | DMA_BUF_SYNC_WRITE);
+  dmabuf_nv12_external_reset();
+  egl_set_color_mode(previous_use709, previous_full);
+  glBindFramebuffer(GL_DRAW_FRAMEBUFFER, previous_draw_fbo);
+  glBindFramebuffer(GL_READ_FRAMEBUFFER, previous_read_fbo);
+  glBindRenderbuffer(GL_RENDERBUFFER, previous_rbo);
+  glViewport(previous_viewport[0], previous_viewport[1],
+             previous_viewport[2], previous_viewport[3]);
+  if (fbo) glDeleteFramebuffers(1, &fbo);
+  if (rbo) glDeleteRenderbuffers(1, &rbo);
+  if (map != MAP_FAILED) munmap(map, buffer_size);
+  if (fd >= 0) close(fd);
+  if (acquired_context) {
+    EGLBoolean restored;
+    if (previous_display != EGL_NO_DISPLAY && previous_context != EGL_NO_CONTEXT)
+      restored = eglMakeCurrent(previous_display, previous_draw_surface,
+                                previous_read_surface, previous_context);
+    else
+      restored = eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+    current = false;
+    if (!restored) {
+      fprintf(stderr, "SELFTEST: restore previous EGL binding FAIL (EGL error 0x%x)\n",
+              eglGetError());
+      if (rc == 0)
+        rc = 1;
+    }
+  }
+  if (rc == 77)
+    printf("SELFTEST: NV12 external SKIP (%s)\n", skip_reason);
+  else
+    printf("SELFTEST: NV12 external %s\n", rc == 0 ? "PASSED" : "FAILED");
+  return rc;
+#endif
+}
+
+/* Zero-copy render for a *linear* NV12 capture buffer.  The optional external
+ * path imports both planes as one NV12 image.  The default/fallback imports
+ * luma as R8 and interleaved chroma as GR88, each with integer texelFetch.
+ * uv_offset is a byte offset handed straight to EGL; uv_offset % pitch checks
+ * that the chroma plane starts on a luma-row boundary. */
 int egl_draw_dmabuf_nv12(int dmabuf_fd, unsigned int size, int frame_width,
                          int frame_height, int pitch, int uv_offset) {
   EGLImageKHR img_y, img_uv;
@@ -810,7 +1303,7 @@ int egl_draw_dmabuf_nv12(int dmabuf_fd, unsigned int size, int frame_width,
     zc_breakdown = getenv("MOONLIGHT_ZC_BREAKDOWN") != NULL;
   double bd0 = zc_breakdown ? zc_now_ms() : 0.0;
 
-  if (!nv12_program || pitch <= 0 || pitch < frame_width ||
+  if ((!nv12_program && !nv12_external_available) || pitch <= 0 || pitch < frame_width ||
       uv_offset % pitch != 0)
     return -1;
 
@@ -821,20 +1314,45 @@ int egl_draw_dmabuf_nv12(int dmabuf_fd, unsigned int size, int frame_width,
 
   if (frame_width != dmabuf_last_w || frame_height != dmabuf_last_h) {
     dmabuf_nv12_reset();
+    dmabuf_nv12_external_reset();
     dmabuf_last_w = frame_width;
     dmabuf_last_h = frame_height;
   }
-
-  if (dmabuf_get_nv12(dmabuf_fd, frame_height, pitch, uv_offset,
-                      &img_y, &img_uv) != 0)
-    return -1;
-
-  double bd1 = zc_breakdown ? zc_now_ms() : 0.0;
 
   eglQuerySurface(display, surface, EGL_WIDTH, &surf_w);
   eglQuerySurface(display, surface, EGL_HEIGHT, &surf_h);
   if (surf_w <= 0) surf_w = width;
   if (surf_h <= 0) surf_h = height;
+
+  double bd1 = 0.0;
+  if (nv12_external_requested) {
+    if (draw_dmabuf_nv12_external(dmabuf_fd, size, frame_width, frame_height,
+                                  pitch, uv_offset, surf_w, surf_h,
+                                  zc_breakdown ? &bd1 : NULL) == 0) {
+      if (!nv12_external_active_shown) {
+        fprintf(stderr, "EGL: nv12 external path active fd=%d frame=%dx%d pitch=%d uv_off=%d\n",
+                dmabuf_fd, frame_width, frame_height, pitch, uv_offset);
+        nv12_external_active_shown = 1;
+      }
+      if (zc_breakdown) glFinish();
+      double bd2 = zc_breakdown ? zc_now_ms() : 0.0;
+      eglSwapBuffers(display, surface);
+      double bd3 = zc_breakdown ? zc_now_ms() : 0.0;
+      zc_record_breakdown(bd0, bd1, bd2, bd3);
+      return 0;
+    }
+    if (nv12_external_draw_failures < 5) {
+      nv12_external_draw_failures++;
+      fprintf(stderr, "EGL: nv12 external draw failed; falling back to two-plane path\n");
+    }
+    if (!nv12_program)
+      return -1;
+  }
+
+  if (dmabuf_get_nv12(dmabuf_fd, frame_height, pitch, uv_offset,
+                      &img_y, &img_uv) != 0)
+    return -1;
+  bd1 = zc_breakdown ? zc_now_ms() : 0.0;
 
   glUseProgram(nv12_program);
 
@@ -885,19 +1403,7 @@ int egl_draw_dmabuf_nv12(int dmabuf_fd, unsigned int size, int frame_width,
   eglSwapBuffers(display, surface);
 
   double bd3 = zc_breakdown ? zc_now_ms() : 0.0;
-  if (zc_breakdown) {
-    zc_bd_img += bd1 - bd0;
-    zc_bd_render += bd2 - bd1;
-    zc_bd_swap += bd3 - bd2;
-    if (++zc_bd_frames == 30) {
-      fprintf(stderr, "EGL: zc breakdown img=%.2fms render+finish=%.2fms swap=%.2fms "
-                      "creates=%u hits=%u\n",
-              zc_bd_img / 30, zc_bd_render / 30, zc_bd_swap / 30,
-              zc_img_creates, zc_img_hits);
-      zc_bd_img = zc_bd_render = zc_bd_swap = 0;
-      zc_bd_frames = 0;
-    }
-  }
+  zc_record_breakdown(bd0, bd1, bd2, bd3);
   return 0;
 }
 
@@ -911,6 +1417,17 @@ void egl_destroy() {
       p_eglDestroyImageKHR(display, dmabuf_images[i].image);
   dmabuf_images_count = 0;
   dmabuf_nv12_reset();
+  dmabuf_nv12_external_reset();
+  if (nv12_external_texture) {
+    glDeleteTextures(1, &nv12_external_texture);
+    nv12_external_texture = 0;
+  }
+  if (nv12_external_program) {
+    glDeleteProgram(nv12_external_program);
+    nv12_external_program = 0;
+  }
+  nv12_external_available = 0;
+  nv12_external_requested = 0;
   glDeleteTextures(2, nv12_texture);
   nv12_texture[0] = 0;
   nv12_texture[1] = 0;
