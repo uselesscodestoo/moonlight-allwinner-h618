@@ -10,10 +10,18 @@
             #size-cells = <1>;
             g2d: g2d@1480000 {
                 compatible = "allwinner,sunxi-g2d";
-                reg = <0x01480000 0x3ffff>;
+                /*
+                 * Second reg is the CCU page, needed only to deassert the
+                 * G2D reset (CCU 0x0300163c bit 16) out-of-tree because
+                 * mainline ccu-sun50i-h616.c has no G2D reset binding.
+                 */
+                reg = <0x01480000 0x3ffff>, <0x03001000 0x1000>;
+                reg-names = "g2d", "ccu";
                 interrupts = <0 90 4>;
                 clocks = <&ccu 33>, <&ccu 34>;  /* CLK_G2D, CLK_BUS_G2D (h616-ccu.h) */
                 clock-names = "g2d", "bus";
+                assigned-clocks = <&ccu 33>;    /* vendor runs G2D at 300 MHz */
+                assigned-clock-rates = <300000000>;
                 status = "okay";
             };
         };
