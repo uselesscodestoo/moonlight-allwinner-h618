@@ -2,8 +2,8 @@
 # Acceptance matrix for the H618 zero-copy display path.
 #   HOST=<sunshine-ip> ML=<moonlight binary> scripts/h618-accept.sh
 # Runs one real stream per configuration and prints the per-frame c2
-# (draw+swap). Exits non-zero unless the "default" run reaches c2 < 16.7 ms
-# AND avg_fps >= 58 (control runs only need c2 < 16.7 ms).
+# (draw+swap). Strict cases require c2 < 16.7 ms AND final_avg_fps >= 58
+# (control runs only need c2 < 16.7 ms).
 set -u
 export DISPLAY="${DISPLAY:-:0}"
 export LIBVA_DRIVER_NAME="${LIBVA_DRIVER_NAME:-v4l2_request}"
@@ -45,20 +45,26 @@ report() {
     return 1
   fi
   grep -a "x11: " "$log" | awk -v strict="$strict" '
-    { for (i=1;i<=NF;i++) if ($i ~ /^c2=/)  { v=$i; sub(/^c2=/,"",v);  sub(/ms$/,"",v); s+=v; n++ }
-      for (i=1;i<=NF;i++) if ($i ~ /^delta_fps=/) { w=$i; sub(/^delta_fps=/,"",w); fs+=w; fn++ }
-      for (i=1;i<=NF;i++) if ($i ~ /^avg_fps=/) { a=$i; sub(/^avg_fps=/,"",a); qs+=a; qn++ } }
+    { has_delta=0; has_submits=0;
+      for (i=1;i<=NF;i++) {
+        if ($i ~ /^c2=/) { v=$i; sub(/^c2=/,"",v); sub(/ms$/,"",v); s+=v; n++ }
+        if ($i ~ /^avg_fps=/) { a=$i; sub(/^avg_fps=/,"",a); last_avg_fps=a+0; qn++ }
+        if ($i ~ /^delta_fps=/) { delta=$i; sub(/^delta_fps=/,"",delta); has_delta=1 }
+        if ($i ~ /^submits=/) { submits=$i; sub(/^submits=/,"",submits); has_submits=1 }
+      }
+      if (has_delta && has_submits) { submit_sum+=submits*delta/10.0; submit_n++ }
+    }
     END {
       if (n == 0) { print "  FAIL(no samples)"; exit 1 }
       ok = (s/n < 16.7);
-      if (strict && (!qn || qs/qn < 58)) ok = 0;
+      if (strict && (!qn || last_avg_fps < 58)) ok = 0;
       if (qn)
-        printf "  samples=%d  avg_c2=%.2f ms  avg_fps=%.1f  %s\n", n, s/n,
-               qs/qn, (ok ? "PASS" : "FAIL");
+        printf "  samples=%d  avg_c2=%.2f ms  final_avg_fps=%.1f  %s\n", n, s/n,
+               last_avg_fps, (ok ? "PASS" : "FAIL");
       else
-        printf "  samples=%d  avg_c2=%.2f ms  avg_fps=n/a  %s\n", n, s/n,
+        printf "  samples=%d  avg_c2=%.2f ms  final_avg_fps=n/a  %s\n", n, s/n,
                (ok ? "PASS" : "FAIL");
-      if (fn) printf "  avg_delta_fps=%.1f (host rate)\n", fs/fn;
+      if (submit_n) printf "  avg_submit_fps=%.1f (decoder submissions)\n", submit_sum/submit_n;
       exit (ok ? 0 : 1)
     }'
 }
