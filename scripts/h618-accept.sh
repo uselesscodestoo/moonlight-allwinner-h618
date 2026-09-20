@@ -44,6 +44,16 @@ report() {
     echo "  FAIL(path marker missing: $marker)"
     return 1
   fi
+  if [ "$marker" = "EGL: nv12 external path active" ] &&
+      grep -aqE \
+          -e 'EGL: nv12 external draw failed; falling back to two-plane path' \
+          -e 'EGL: nv12 two-plane import' \
+          -e 'EGL: native NV12 external path unavailable; using two-plane path' \
+          -e 'x11: (render path -> )?(zero-copy-failed|fallback-download)([[:space:]]|$)' \
+          "$log"; then
+    echo "  FAIL(external path fallback detected)"
+    return 1
+  fi
   grep -a "x11: " "$log" | awk -v strict="$strict" '
     { has_delta=0; has_submits=0;
       for (i=1;i<=NF;i++) {
