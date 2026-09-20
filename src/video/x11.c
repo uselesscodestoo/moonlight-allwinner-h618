@@ -220,6 +220,7 @@ static void apply_stream_colors(AVFrame* frame) {
     else        { rv = 1.596027f; gu = 0.391762f; gv = 0.812968f; bu = 2.017232f; }
   }
 
+  egl_set_color_mode(use709, full);
   egl_set_color_params(yscale, yoff, rv, gu, gv, bu);
   fprintf(stderr, "x11: colour conversion: %s range, %s matrix\n",
           full ? "full" : "limited", use709 ? "BT.709" : "BT.601");

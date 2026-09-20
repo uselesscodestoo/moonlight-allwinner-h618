@@ -235,6 +235,8 @@ static GLint nv12_color_uniforms[6];
 static float color_yscale = 1.164383f, color_yoff = 16.0f / 255.0f;
 static float color_rv = 1.596027f, color_gu = 0.391762f;
 static float color_gv = 0.812968f, color_bu = 2.017232f;
+static int color_use_bt709;
+static int color_full_range;
 static GLint sw_color_uniforms[6];
 static GLuint dmabuf_texture;
 static GLint dmabuf_uniforms[15];
@@ -344,6 +346,11 @@ void egl_set_color_params(float yscale, float yoff, float rv, float gu, float gv
   color_gu = gu;
   color_gv = gv;
   color_bu = bu;
+}
+
+void egl_set_color_mode(int use_bt709, int full_range) {
+  color_use_bt709 = !!use_bt709;
+  color_full_range = !!full_range;
 }
 
 static void upload_color_params(const GLint* u) {

@@ -28,4 +28,10 @@ int egl_draw_dmabuf_nv12(int dmabuf_fd, unsigned int size, int frame_width, int 
 /* Set the YCbCr -> RGB conversion (limited/full range, 601/709 coefficients)
  * from the stream's own metadata. */
 void egl_set_color_params(float yscale, float yoff, float rv, float gu, float gv, float bu);
+/* Preserve the discrete metadata needed by EGL's native YUV conversion. */
+void egl_set_color_mode(int use_bt709, int full_range);
+
+/* Runs the real external-texture renderer on a synthetic CMA NV12 dma-buf.
+ * Returns 0 on pass, 77 when the allocator/import cannot be tested, 1 on fail. */
+int egl_nv12_external_selftest(void);
 void egl_destroy();
