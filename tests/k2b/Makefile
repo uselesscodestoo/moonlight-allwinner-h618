@@ -9,6 +9,7 @@ EXEEXT := .exe
 endif
 TEST_BINARY := $(BUILD_DIR)/test_frame$(EXEEXT)
 AU_TEST_BINARY := $(BUILD_DIR)/test_access_unit$(EXEEXT)
+QUEUE_TEST_BINARY := $(BUILD_DIR)/test_input_queue$(EXEEXT)
 DISP_TEST_BINARY := $(BUILD_DIR)/test_disp_config$(EXEEXT)
 
 # Keep the frame-only target independent of the external vendor include tree.
@@ -32,6 +33,14 @@ test-au: $(AU_TEST_BINARY)
 $(AU_TEST_BINARY): tests/k2b/test_access_unit.c src/video/k2b/access_unit.c src/video/k2b/access_unit.h third_party/moonlight-common-c/src/Limelight.h
 	mkdir -p $(BUILD_DIR)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -Isrc/video/k2b -Ithird_party/moonlight-common-c/src tests/k2b/test_access_unit.c src/video/k2b/access_unit.c $(LDFLAGS) $(LDLIBS) -o $@
+
+.PHONY: test-queue
+test-queue: $(QUEUE_TEST_BINARY)
+	./$(QUEUE_TEST_BINARY)
+
+$(QUEUE_TEST_BINARY): tests/k2b/test_input_queue.c src/video/k2b/input_queue.c src/video/k2b/input_queue.h src/video/k2b/access_unit.c src/video/k2b/access_unit.h third_party/moonlight-common-c/src/Limelight.h
+	mkdir -p $(BUILD_DIR)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -pthread -Isrc/video/k2b -Ithird_party/moonlight-common-c/src tests/k2b/test_input_queue.c src/video/k2b/input_queue.c src/video/k2b/access_unit.c $(LDFLAGS) $(LDLIBS) -o $@
 
 .PHONY: test-disp check-vendor-headers
 test-disp: $(DISP_TEST_BINARY)
