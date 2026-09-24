@@ -1,5 +1,38 @@
 # Moonlight Embedded
 
+## 先选分支 / Choose the branch for your kernel
+
+**按开发板运行的内核与驱动栈选择，不要只看 H618 型号。Choose by the
+installed kernel/driver stack, not the SoC name alone.**
+
+| 系统 / Installed system | 使用分支 / Branch | 解码与显示 / Video path |
+| --- | --- | --- |
+| Armbian current / mainline-family Linux, Cedrus V4L2 Request and Mesa/Panfrost; reference board: Orange Pi Zero 2W | [`h618-egl-download`](https://github.com/uselesscodestoo/moonlight-allwinner-h618/tree/h618-egl-download) | Cedrus → custom libva-v4l2-request → DMA-BUF/EGL → X11 |
+| KICKPI K2B vendor Longan Linux 5.4.125, vendor Cedar device and `/dev/disp` | [`k2b-cedarc-disp`](https://github.com/uselesscodestoo/moonlight-allwinner-h618/tree/k2b-cedarc-disp) | CedarC VPU → NV12 DMA-BUF → vendor DE33 `/dev/disp` → HDMI |
+
+These are two different kernel interfaces, not interchangeable launch modes.
+A stock kernel alone is not sufficient for the current/mainline route: its
+documented companion driver and userspace setup are also required. The vendor
+route needs the matching vendor kernel, headers, private CedarC runtime and
+`cedar_test_heap` module; it does not require Mali acceleration for video.
+Other boards/images with the same H618 are not automatically validated.
+
+`uname -r` helps identify the kernel, but a version string or the existence
+of a `/dev/video*` node alone does not prove compatibility. Confirm the image
+and actual driver stack against the selected branch's documentation.
+
+**You are reading `h618-egl-download`, the Armbian/current (mainline-family)
+kernel route.** For the KICKPI Longan 5.4 vendor image and direct DE33 display,
+use [`k2b-cedarc-disp`](https://github.com/uselesscodestoo/moonlight-allwinner-h618/tree/k2b-cedarc-disp).
+That branch defaults to HEVC and includes its own build, heap-module and
+desktop-restoration instructions. Its HEVC work is already merged; new users
+do not need the temporary `k2b-hevc` branch.
+
+The EGL notes below contain historical measurements from different render
+paths. See [the detailed experiments](docs/h618-zero-copy.md), including
+native NV12 external sampling, before interpreting an older frame-rate
+figure as a limit for every path. They are not vendor DE33 measurements.
+
 ## Provenance and changes in this repository
 
 This tree is a **derived work** of
