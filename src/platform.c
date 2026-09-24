@@ -35,6 +35,10 @@ typedef bool(*ImxInit)();
 
 enum platform platform_check(char* name) {
   bool std = strcmp(name, "auto") == 0;
+  #ifdef HAVE_K2B
+  if (strcmp(name, "k2b") == 0)
+    return K2B;
+  #endif
   #ifdef HAVE_IMX
   if (std || strcmp(name, "imx") == 0) {
     void *handle = dlopen("libmoonlight-imx.so", RTLD_NOW | RTLD_GLOBAL);
@@ -140,6 +144,10 @@ void platform_stop(enum platform system) {
 
 DECODER_RENDERER_CALLBACKS* platform_get_video(enum platform system) {
   switch (system) {
+  #ifdef HAVE_K2B
+  case K2B:
+    return &decoder_callbacks_k2b;
+  #endif
   #ifdef HAVE_X11
   case X11:
     return &decoder_callbacks_x11;
@@ -231,6 +239,8 @@ bool platform_prefers_codec(enum platform system, enum codecs codec) {
 
 char* platform_name(enum platform system) {
   switch(system) {
+  case K2B:
+    return "Orange Pi Zero 2W CedarC/display";
   case PI:
     return "Raspberry Pi (Broadcom)";
   case MMAL:

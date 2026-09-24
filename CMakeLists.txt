@@ -3,6 +3,10 @@ project(moonlight-embedded VERSION 2.7.1 LANGUAGES C)
 SET(CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
 SET(CMAKE_C_STANDARD 99)
 option(BUILD_K2B_CEDARC_RUNTIME "Build the private pinned Linux AArch64 CedarC runtime" OFF)
+option(ENABLE_K2B "Enable direct CedarC/display video on K2B" OFF)
+if(ENABLE_K2B)
+  set(BUILD_K2B_CEDARC_RUNTIME ON CACHE BOOL "Build the private pinned Linux AArch64 CedarC runtime" FORCE)
+endif()
 if(BUILD_K2B_CEDARC_RUNTIME)
   add_subdirectory(tools/k2b-runtime)
 endif()
@@ -93,6 +97,23 @@ add_subdirectory(libgamestream)
 add_executable(moonlight ${SRC_LIST})
 target_link_libraries(moonlight m)
 target_link_libraries(moonlight gamestream)
+
+if(ENABLE_K2B)
+  set(K2B_VENDOR_HEADERS "" CACHE PATH "Directory containing video/sunxi_display2.h")
+  if(NOT EXISTS "${K2B_VENDOR_HEADERS}/video/sunxi_display2.h")
+    message(FATAL_ERROR "K2B display header missing: ${K2B_VENDOR_HEADERS}/video/sunxi_display2.h")
+  endif()
+  target_sources(moonlight PRIVATE
+    ./src/video/k2b/video.c
+    ./src/video/k2b/access_unit.c
+    ./src/video/k2b/input_queue.c
+    ./src/video/k2b/disp_config.c
+    ./src/video/k2b/disp_presenter.c)
+  target_compile_options(moonlight PRIVATE "-idirafter${K2B_VENDOR_HEADERS}")
+  target_link_libraries(moonlight PRIVATE k2b_cedar_runtime)
+  list(APPEND MOONLIGHT_DEFINITIONS HAVE_K2B)
+  list(APPEND MOONLIGHT_OPTIONS K2B)
+endif()
 
 if (CMAKE_SYSTEM_NAME MATCHES "FreeBSD")
   set(ALSA_FOUND FALSE)
@@ -233,12 +254,12 @@ if (PULSE_FOUND)
   target_link_libraries(moonlight ${PULSE_LIBRARIES})
 endif()
 
-if (AMLOGIC_FOUND OR BROADCOM-OMX_FOUND OR MMAL_FOUND OR FREESCALE_FOUND OR ROCKCHIP_FOUND OR X11_FOUND)
+if (AMLOGIC_FOUND OR BROADCOM-OMX_FOUND OR MMAL_FOUND OR FREESCALE_FOUND OR ROCKCHIP_FOUND OR X11_FOUND OR ENABLE_K2B)
   list(APPEND MOONLIGHT_DEFINITIONS HAVE_EMBEDDED)
   list(APPEND MOONLIGHT_OPTIONS EMBEDDED)
 endif()
 
-if(NOT AMLOGIC_FOUND AND NOT BROADCOM-OMX_FOUND AND NOT MMAL_FOUND AND NOT FREESCALE_FOUND AND NOT ROCKCHIP_FOUND AND NOT SOFTWARE_FOUND)
+if(NOT AMLOGIC_FOUND AND NOT BROADCOM-OMX_FOUND AND NOT MMAL_FOUND AND NOT FREESCALE_FOUND AND NOT ROCKCHIP_FOUND AND NOT SOFTWARE_FOUND AND NOT ENABLE_K2B)
   message(FATAL_ERROR "No video output available")
 endif()
 

@@ -48,3 +48,7 @@ extern DECODER_RENDERER_CALLBACKS decoder_callbacks_x11_vdpau;
 #ifdef HAVE_SDL
 extern DECODER_RENDERER_CALLBACKS decoder_callbacks_sdl;
 #endif
+#ifdef HAVE_K2B
+extern DECODER_RENDERER_CALLBACKS decoder_callbacks_k2b;
+void video_k2b_configure(int color_range);
+#endif
