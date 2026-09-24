@@ -179,6 +179,7 @@ static void test_invalid(void)
   INVALID("reversed horizontal crop", f.picture.nRightOffset = -1);
   INVALID("reversed vertical crop", f.picture.nBottomOffset = -1);
   INVALID("right beyond width", f.picture.nRightOffset = INT_MAX);
+  INVALID("picture width below visible right", f.picture.nWidth = 1918);
   INVALID("bottom beyond height", f.picture.nBottomOffset = INT_MAX);
   INVALID("zero visible width", f.picture.nRightOffset = 0);
   INVALID("zero visible height", f.picture.nBottomOffset = 0);
