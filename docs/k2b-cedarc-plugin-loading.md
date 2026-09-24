@@ -44,6 +44,15 @@ CreateH264Decoder 函数指针及 bIsSoft=`0`。`0xee80` 调用注册，随后�
 `0x2ef30` 的 R_AARCH64_GLOB_DAT → CreateH264Decoder 重定位核对。
 这些证据支持这个插件注册的是硬件 H.264 creator，不能代替解码验证。
 
+后续加载组件实施前再次核对：`0xee74` 传入的地址为 `0x1a408`，原始字节
+`68 32 36 34 00` 即字符串 `h264`。配套 videoengine.h 的完整类型是
+`typedef DecoderInterface *VDecoderCreator(VideoEngine *)`，注册参数分别为
+codec enum、`char *desc`、`VDecoderCreator *` 和 `int bIsSoft`。
+因此生产 wrapper 可以解析真实 creator 地址后调用已声明的
+`VDecoderRegister(VIDEO_CODEC_FORMAT_H264, "h264", creator, 0)`，检查整数返回值，
+不用猜测 void 初始化函数的返回寄存器内容。该调用只登记 creator，不调用 creator，
+也不是初始化 VPU。函数自身的已知 OOM 风险仍然存在。
+
 ## 注册与句柄生命周期
 
 配套 `vdecoder/include/videoengine.h:106` 声明有返回值的
@@ -68,7 +77,7 @@ creator 指针仍可能被新解码器使用。重连不能重复盲调初始化
    不以卸载/再加载来清理未知注册状态。
 4. void 初始化返回不作注册成功证明。后续包装需明确注册成功观测策略；
    可以进一步核对并使用已声明的 VDecoderRegister 与固定 creator，但
-   这里尚未实现或验证该替代调用路径。
+   此处记录的是实施前的源码依据；实际实现与验证另行记录。
 5. 先完成真实库闭包构建和运行时解析自检，再进入内存 begin/解码器创建。
    完整链接成功只证明链接阶段的符号解析，不能替代上述运行时检查。
 
@@ -83,3 +92,28 @@ aarch64-linux-gnu-objdump -d --disassemble=CedarPluginVDInit "$blob/libawh264.so
 aarch64-linux-gnu-readelf -p .rodata "$blob/libvideoengine.so"
 aarch64-linux-gnu-readelf -rW "$blob/libawh264.so"
 ```
+
+## 首次真实加载前的原生产物初始化表复核
+
+板端 `build/k2b-runtime-native/runtime` 的只读 ELF 检查确认，每个库的
+`.init_array` 只有一个入口，对应下表的 `frame_dummy`。实际反汇编均为
+跳转到 `register_tm_clones`（其余为对齐 nop），未发现设备初始化调用。
+
+| 库 | frame_dummy 地址 |
+| --- | --- |
+| cdc_base | 0x3150 |
+| MemAdapter | 0x0f70 |
+| sbm | 0x1d80 |
+| fbm | 0x12f0 |
+| vdecoder | 0x2470 |
+| VE | 0x24f0 |
+| videoengine | 0x1b30 |
+| awh264 | 0x4080 |
+| vdecVcs | 0x1530 |
+
+这些地址仅用于定位本次原生构建与固定 blob，不是未来重编译的 ABI 常量。
+配套源码 `cdc_version.h` 虽定义 constructor 宏 TagVersionInfo，但本次选择的
+base/vdecoder 源码没有使用它；该宏本身也只打印版本日志。
+这是允许进入受控加载测试的静态依据，不是加载已完成或绝无副作用的证明。
+真实加载仍要用 RTLD_NOW、路径/符号来源门禁以及 strace 检查，并且不调用
+CreateVideoDecoder、InitializeVideoDecoder 或内存 begin。
