@@ -1,5 +1,11 @@
 # K2B live streaming checkpoint — 2026-09-24
 
+> Current entry point: [vendor-kernel README](../README.md). HEVC has been
+> merged into k2b-cedarc-disp and is now the default; use `-codec h264` for
+> AVC. See [HEVC evidence and build instructions](k2b-hevc.md). The dated
+> H.264 commands/results below are historical checkpoints, not the current
+> codec default.
+
 Independent `k2b-cedarc-disp` branch, KICKPI K2B Longan Linux 5.4.125.
 Following the user's request to prioritize functional tests over repeated reviews,
 this checkpoint uses the vendor release-fence path and measured live runs. It is

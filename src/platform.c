@@ -232,6 +232,7 @@ bool platform_prefers_codec(enum platform system, enum codecs codec) {
     case RK:
     case X11_VAAPI:
     case X11_VDPAU:
+    case K2B:
       return true;
     }
     return false;

@@ -1,63 +1,90 @@
-# Moonlight Embedded
+# Moonlight Embedded — H618 vendor-kernel edition
 
-## Provenance and changes in this repository
+## 先选分支 / Choose the branch for your kernel
 
-This tree is a **derived work** of
-[`moonlight-stream/moonlight-embedded`](https://github.com/moonlight-stream/moonlight-embedded)
-(GPL-3.0, see `LICENSE`), published as the branch **`h618-egl-download`**.  This
-is a GitHub fork of the upstream repository, maintained independently: the
-changes target the Allwinner H618 and are not intended for upstream.  All
-upstream credit belongs to the Moonlight Embedded authors.
+**按开发板运行的内核与驱动栈选择，不要只看 H618 型号。Choose by the
+installed kernel/driver stack, not the SoC name alone.**
 
-* Upstream: <https://github.com/moonlight-stream/moonlight-embedded>
-* Base commit of this tree: `f32e415` ("libgamestream: fix uniqueid.dat read check")
-* Full history: the tree started as a `git clone --depth 1` and has since been
-  unshallowed, so the complete upstream history up to `f32e415` is present.
-* Companion driver: [`bootlin/libva-v4l2-request`](https://github.com/bootlin/libva-v4l2-request)
-  with the H618 cedrus port and linear-NV12 capture support (branch
-  `h618-c-port`).
+| 系统 / Installed system | 使用分支 / Branch | 解码与显示 / Video path |
+| --- | --- | --- |
+| Armbian current / mainline-family Linux, Cedrus V4L2 Request and Mesa/Panfrost; reference board: Orange Pi Zero 2W | [`h618-egl-download`](https://github.com/uselesscodestoo/moonlight-allwinner-h618/tree/h618-egl-download) | Cedrus → custom libva-v4l2-request → DMA-BUF/EGL → X11 |
+| KICKPI K2B vendor Longan Linux 5.4.125, vendor Cedar device and `/dev/disp` | [`k2b-cedarc-disp`](https://github.com/uselesscodestoo/moonlight-allwinner-h618/tree/k2b-cedarc-disp) | CedarC VPU → NV12 DMA-BUF → vendor DE33 `/dev/disp` → HDMI |
 
-### What this branch adds
+These are two different kernel interfaces, not interchangeable launch modes.
+A stock kernel alone is not sufficient for the current/mainline route: its
+documented companion driver and userspace setup are also required. The vendor
+route needs the matching vendor kernel, headers, private CedarC runtime and
+`cedar_test_heap` module; it does not require Mali acceleration for video.
+Other boards/images with the same H618 are not automatically validated.
 
-| Commit | Change |
-|---|---|
-| `d782288` | Render VAAPI frames through `hwdownload` + EGL instead of `vaapi_queue` |
-| `7eabd02` | **Zero-copy display**: import the decoder's dma-buf directly - linear NV12 as a native NV12 texture, `SUNXI_TILED_NV12` as an R8 texture de-tiled in the fragment shader |
-| `e775aeb` | Keep the output awake while streaming (DPMS/screen saver); `MOONLIGHT_NO_VSYNC` switch |
-| `19ab0ae` | Derive the YCbCr->RGB conversion from the stream's own metadata (Sunshine tags limited-range BT.601) |
-| `679437a` | GPU self-test for that conversion (`MOONLIGHT_COLOR_SELFTEST=1`) |
-| `569c420` | `tools/egl_bench.c`: controlled display-path benchmark |
-| `bb929e9` | Force DPMS on when a stream starts; benchmark uses the software path |
-| `f9bd685` | Per-10-frame instrumentation: fps, host:client frame ratio, per-stage cost |
-| `8f27906` | Optional blanking calls can no longer kill the client (`DPMSForceLevel` with the extension disabled raised BadMatch) |
-| `docs/` | `docs/h618-zero-copy.md` - the zero-copy design, the board traps and every debug switch |
+`uname -r` helps identify the kernel, but a version string or the existence
+of a `/dev/video*` node alone does not prove compatibility. Confirm the image
+and actual driver stack against the selected branch's documentation.
 
-See `docs/h618-zero-copy.md` for the design and `scripts/h618-quick-start.sh`
-for a reference launch script (relative paths; documented for the Orange Pi
-Zero 2W / H618, adapt as needed).
+## 本分支 / This branch: `k2b-cedarc-disp`
 
-### Building (H618 reference configuration)
+Use this branch for the tested **KICKPI K2B Longan Linux 5.4.125** image.
+`k2b-hevc` was the HEVC experiment branch; it has been merged here. New vendor
+kernel users should use `k2b-cedarc-disp`, not the experiment branch.
+
+For Armbian/current with Cedrus and EGL, switch to
+[`h618-egl-download`](https://github.com/uselesscodestoo/moonlight-allwinner-h618/tree/h618-egl-download).
+Do not use that branch's `x11_vaapi` launch instructions on this vendor image.
+
+### Normal use / 日常启动
+
+After the native build, matching heap module setup and Sunshine pairing:
 
 ```sh
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j2      # binary: build/moonlight
-# run (see scripts/h618-quick-start.sh):
-LIBVA_DRIVER_NAME=v4l2_request LIBVA_DRIVERS_PATH=<libva build or install dir> \
-  ./build/moonlight -platform x11_vaapi -codec h265 -1080 -fps 60 -app Desktop stream <host>
+# From this repository; replace the address with your Sunshine host.
+sudo sh tools/k2b-stream.sh <SUNSHINE_IP>
+# Optional compatibility/quality comparison:
+sudo sh tools/k2b-stream.sh <SUNSHINE_IP> -codec h264
 ```
 
-### Known issues
+Default: **HEVC Main 8-bit SDR, actual 1920×1080 decode/output, 60 fps target,
+15 Mbps**, headphone audio through the desktop user's Pulse server. The raw
+K2B backend also prefers HEVC for `-codec auto`; explicit H.264 remains supported.
+HDR/Main10 and higher frame rates are not enabled.
 
-* A fixed **vertical tear** can appear under heavy motion (e.g. scrolling) on
-  the zero-copy path; it does not affect normal use.  Recorded with the
-  suspected cause and a way to confirm it in `docs/h618-zero-copy.md`.
-* HEVC streams with more than one B frame per group differ from a software
-  decoder on the first B frame after each IDR (hardware behaviour; H264 is
-  unaffected).  See the companion driver's `docs/zero-copy-results.md`.
-* 1080p HEVC zero-copy runs at ~34-36 fps on this board; the limit is the GPU
-  sampling the decoder's dma-buf, not the X server or vsync (measured with
-  `MOONLIGHT_ZC_BREAKDOWN=1`; see `docs/h618-zero-copy.md`).  The compositor
-  costs a further ~10 ms/frame, so keep it off while streaming.
+Exit with **Ctrl+Shift+Alt+Q**. The managed systemd session restores the existing
+XFCE framebuffer/HDMI output after exit; a brief black interval is expected.
+Do not use SIGKILL on the live decoder to force DMA-buffer teardown. Forced
+power loss or a kernel hang cannot be repaired by a userspace post-hook.
+
+### Build, prerequisites and measured status
+
+- [HEVC build/run instructions and evidence](docs/k2b-hevc.md).
+- [Board setup, heap-module autoload, audio, recovery and test history](docs/k2b-live-stream.md).
+- [Pinned vendor blob hashes](docs/k2b-cedarc-blobs.sha256). Supply the exact
+  documented archive and matching kernel headers; do not substitute arbitrary
+  CedarX/CedarC releases or install these private libraries globally.
+
+The video path uses the same decoded NV12 DMA-BUF in VPU and DE33, without
+software decoding, GPU upload or a decoded-pixel copy. Compressed input is
+still copied into Cedar's stream buffer.
+
+Fixed 1080p60 HEVC sample: 600 decoded/display-submitted frames at 59.997
+submissions/s; all 600 visible NV12 frames exactly matched the software decode
+reference. A 90-second HEVC live invocation completed with progressing output
+and successful desktop/resource cleanup. These measurements are not an
+end-to-end latency or optical scanout measurement. See the checkpoint for
+remaining visual/long-run acceptance limits; earlier AVC gaming acceptance
+does not imply a HEVC long-duration pass.
+
+### Provenance
+
+This is a GPL-3.0 derived work of
+[moonlight-stream/moonlight-embedded](https://github.com/moonlight-stream/moonlight-embedded)
+(see [LICENSE](LICENSE)), developed from this repository's H618 work.
+The vendor OS is Longan-derived. The pinned CedarC userspace package's Tina
+provenance does not mean this board runs a Tina SDK kernel.
+Upstream credit belongs to the Moonlight Embedded authors; these board-specific
+changes are maintained independently. The inherited EGL research remains in
+the tree, but its historical performance notes do not describe this vendor
+`-platform k2b` path.
+
+## Upstream project information
 
  [![Build](https://img.shields.io/github/actions/workflow/status/moonlight-stream/moonlight-embedded/build.yml?branch=master)](https://github.com/moonlight-stream/moonlight-embedded/actions/workflows/build.yml?query=branch%3Amaster) [Nightly Build Downloads](https://nightly.link/moonlight-stream/moonlight-embedded/workflows/build/master)
 

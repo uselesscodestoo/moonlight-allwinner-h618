@@ -1,4 +1,10 @@
 CC ?= cc
+.PHONY: test-codec-default
+test-codec-default:
+	mkdir -p build/k2b-tests
+	$(CC) -std=c99 -O2 -ffunction-sections -fdata-sections -Isrc -Ithird_party/moonlight-common-c/src tests/k2b/test_codec_default.c src/platform.c -Wl,--gc-sections -o build/k2b-tests/test_codec_default
+	./build/k2b-tests/test_codec_default
+
 CFLAGS ?= -std=c99 -O2 -Wall -Wextra -Werror
 CPPFLAGS ?=
 

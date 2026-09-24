@@ -35,7 +35,7 @@ exec /bin/sh "$root/tools/k2b-managed-session.sh" moonlight-k2b.service \
     "$root/tools/k2b-runtime/run-private.sh" \
     "$root/build/k2b-integrated/tools/k2b-runtime/runtime" \
     "$root/build/k2b-integrated/moonlight" stream \
-    -platform k2b -app Desktop -1080 -fps 60 -codec h264 -bitrate 15000 \
+    -platform k2b -app Desktop -1080 -fps 60 -codec hevc -bitrate 15000 \
     -audio pulse \
     -mapping "$root/third_party/SDL_GameControllerDB/gamecontrollerdb.txt" \
     -keydir "$root/build/k2b-pairing" "$@" "$host"
