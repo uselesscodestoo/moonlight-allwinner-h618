@@ -1,6 +1,7 @@
 # K2B CedarC 私有运行库接入记录
 
-本页记录 2026-09-24 离线核对，不是生产运行库已经接好的声明。
+本页记录 2026-09-24 离线核对及热点恢复后的原生构建；运行库已经有项目内
+构建入口，但尚未接通生产解码/显示路径。
 已有探针能解码，不代表其测试内存实现可原样用于显示持有的生产路径。
 
 ## 固定来源
@@ -42,7 +43,8 @@ sha256sum -c /path/to/moonlight-embedded/docs/k2b-cedarc-blobs.sha256
 
 需从配套源码/项目代码构建的组件包括 libcdc_base、libMemAdapter、
 libsbm、libfbm、libvdecoder 和精确限定的 5.4 偏移兼容层。
-本次没有把这些构建步骤接入 Moonlight 顶层 CMake，也未开放 k2b 平台。
+初次离线核对时尚未接入顶层 CMake。后续 `15d0de0` 接入默认关闭的
+私有运行库构建选项；仍未开放 k2b 平台，也未加入 0x804 兼容层。
 
 ## AArch64 结构 ABI 检查
 
@@ -159,10 +161,102 @@ ARM aarch64 ELF。readelf 确认预期 MemAdapter 和会话入口导出；本次
   构建的 54 个场景通过，无报告；SHA256
   `a765b59304426cfa01f655762d1b0e13a3676fcc6dd0fae1ce145b1de63079a5`。
 
+## 固定运行库的项目内构建
+
+提交 `15d0de0` 的公共 CMake 模块校验整个 CedarC 归档、配套 cedar_ve.h
+和四个 blob 的固定哈希，只在构建目录中解压和生成私有库。归档中的
+MemAdapter 不参与构建，使用本项目的显式内存会话实现。
+源码文件逐个列出，不自动搜索系统 Cedar 库，不下载或安装任何库。
+
+源码 ABI 检查是五个源码库的构建依赖。`k2b_runtime_link_check` 以真实
+函数引用和 `--no-as-needed --no-allow-shlib-undefined` 链接全部九个库，
+包括实际解码时才需要的 H.264/Vcs 插件依赖。该程序只作链接产物，
+构建和回归测试不执行它。源码库自身使用 `-z defs`。
+
+板端独立入口（在 `/home/kickpi/projects/moonlight-embedded` 执行）：
+
+```sh
+cmake -S tools/k2b-runtime -B build/k2b-runtime-native \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DK2B_CEDARC_ARCHIVE=/home/kickpi/projects/cedarx_test/tina-243f2cbe.tar.gz \
+  -DK2B_VENDOR_CEDAR_HEADERS="$PWD/build/k2b-vendor-headers/drivers/media/cedar-ve"
+cmake --build build/k2b-runtime-native --parallel 2
+```
+
+生成库位于 `build/k2b-runtime-native/runtime`，没有系统安装步骤。
+`managed-source` 是从固定归档重新生成的构建中间目录，不应在其中开发；
+每次 configure 会校验输入并覆盖其中的配套源码。
+
+Moonlight 顶层的 `BUILD_K2B_CEDARC_RUNTIME` 默认 OFF；打开它只增加这些
+构建目标，不表示 Moonlight 已使用它们，也不注册 `-platform k2b`。
+原有视频输出选择和音频/输入依赖保留。可在顶层配置时增加：
+
+```sh
+-DBUILD_K2B_CEDARC_RUNTIME=ON \
+-DK2B_CEDARC_ARCHIVE=/path/to/tina-243f2cbe.tar.gz \
+-DK2B_VENDOR_CEDAR_HEADERS=/path/to/vendor/drivers/media/cedar-ve
+```
+
+本地 x86_64/WSL 交叉构建回归：
+
+```sh
+sh tests/k2b/check_runtime_build.sh \
+  /mnt/f/temp/projects/cedarx_test/tina-243f2cbe.tar.gz \
+  /mnt/f/work/source/aw-image-build/source/kernel/linux-5.4-h618/drivers/media/cedar-ve \
+  build/k2b-runtime-tests
+```
+
+CMake 文件使用 3.6 兼容 API；上面命令及 shell 回归入口使用现代 CLI，
+需要 CMake 3.13 或更新。交叉回归的“本机 cc”负例假定宿主不是 ARM64，
+不能在 K2B 上原样运行整份脚本。板端用独立入口作原生构建。
+主执行者独立复跑九库 ELF/SONAME/导出/ORIGIN/哈希检查及完整链接、五类
+错误输入和缓存缺输入拒绝，全部通过；实现者另验证过构建目录含空格。
+独立规格审查通过后完成质量审查，没有待修复项；审查结论仅覆盖构建组件。
+
+### 交叉产物与板端原生产物不可混用
+
+本机 GCC 16 / 新 sysroot 生成的 libcdc_base.so 引用了
+`__isoc23_sscanf@GLIBC_2.38`、`__isoc23_strtol@GLIBC_2.38`；K2B 实测 glibc
+为 2.35，因此这套交叉编译库没有上传或加载。板端 GCC 11.4/CMake 3.22.1
+已成功原生构建全部九库与严格链接检查 ELF；所有九库的最高引用版本为
+GLIBC_2.34。四个 blob 哈希未变，源码库均有正确 SONAME 与 `$ORIGIN`
+RUNPATH。版本范围相容仍不等于运行时解析和设备行为已验证。
+
+另用板端系统动态链接器的 `--list` 诊断模式（清除 LD_PRELOAD、LD_AUDIT、
+LD_LIBRARY_PATH，并用 --library-path 指定私有目录）核对链接检查 ELF：
+全部九个 CedarC 库都解析到 `build/k2b-runtime-native/runtime`，glibc/libm/
+libdl 使用板端系统库。该诊断不进入目标 main，不作插件注册或设备初始化，
+也不等价于对未来 dlopen 路径或全部运行时重定位的验证。
+
+厂商源码警告没有隐藏。原生 Release 构建报告 CdcIonUtil 的 NULL 到
+整数转换、CdcSysinfo 忽略 read 结果、iniparser 的 sprintf 潜在边界溢出，
+以及 fbm/sbm/vdecoder 日志格式类型警告。新 MemAdapter 保持
+`-Wall -Wextra -Werror`。这不是“整个厂商代码无警告”的构建。
+配套配置解析源码默认读取 `/etc/cedarc.conf`；后续初始化前必须核查
+实际配置，不能因库放在私有目录就假定配置也已隔离。
+本次只读核对板端没有 `/etc/cedarc.conf`；这只是当前状态，不是未来启动
+可跳过配置核查的依据。
+
+本机保存的验证日志：
+
+- `build/k2b-cross/runtime-build-parent-20260924.log`：主执行者交叉回归，
+  SHA256 `b57a47aba9f6098cb078ca0f497abe5657a1143db61c687031aa8fe2b3d8462d`。
+- `build/k2b-cross/runtime-build-native-20260924.log`：板端原生 Release 构建，
+  SHA256 `0c6f49868800b2a599b9f1046c0111a9127f6687201d7a3f204f52aa4c01e177`。
+- `build/k2b-cross/runtime-native-elf-baseline-20260924.log`：板端 ELF、库哈希
+  及默认 OFF 的 Moonlight 重构建，SHA256
+  `81475a900aa367d920618794ed46f0960abee931236c7116d93dc86b34ffa32f`。
+- `build/k2b-cross/runtime-integrated-native-20260924.log`：默认视频基线配置
+  加 BUILD_K2B_CEDARC_RUNTIME=ON 后完整 Moonlight 与运行库共同构建成功，
+  SHA256 `66ecf1a0309e2bd40f88cd314f9ead430a3a8a3363b24b830f94f283ead47ecc`。
+- `build/k2b-cross/runtime-native-loader-list-20260924.log`：系统链接器
+  --list 解析路径，SHA256
+  `86edd296727cb4b2661c2973d896deddc9af7df960f5ad763e515e1081d22c03`。
+
 ## 生产路径接入仍需处理
 
-新内存组件尚未接入 Moonlight 顶层 CMake、CedarC 初始化包装或显示
-工作线程。需要把已提供的首错传递、显示持有和停止顺序纳入统一状态，
+新内存组件已经由上述 CMake 入口构建，但尚未接入 CedarC 初始化包装或
+显示工作线程。需要把已提供的首错传递、显示持有和停止顺序纳入统一状态，
 不能因新库可以编译就绕过实际图片/显示退役门槛。
 
 保留 ENGINE_REQ → DMA 导入 → 显式 UNMAP → ENGINE_REL 顺序，并提供
@@ -174,6 +268,10 @@ ARM aarch64 ELF。readelf 确认预期 MemAdapter 和会话入口导出；本次
 [内存会话审计](k2b-cedar-memory-lifecycle.md) 进一步明确了 void 回调的
 首错传播、显式会话、失败隔离和 CedarC 初始化非事务性回滚的限制。
 不能将用户态适配器自己的引用归零等同于全部厂商内核状态已经干净。
+
+[插件加载核查](k2b-cedarc-plugin-loading.md) 已确认 AddVDPlugin 的目录扫描
+和 void 注册结果问题。后续仅加载固定 H.264 插件，管理进程级句柄与
+注册状态，并检查真实动态依赖来源；当前构建闭包不替代此运行时门禁。
 
 显示持有/退役依然按 [disp 同步审计](k2b-disp-sync-audit.md) 的证据门槛
 推进；不能用结构 ABI 编译通过或码流复制单测替代实际 1080p60 验收。
