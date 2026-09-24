@@ -36,6 +36,7 @@ struct k2b_video {
   struct k2b_input_queue *queue;
   int ready;
   int initialized;
+  int hevc;
   int memory_started;
   int stop;
   int failed;
@@ -302,7 +303,8 @@ static int initialize_worker(struct k2b_video *video)
   video->decoder = video->api->create();
   if (!video->decoder || !memory_healthy(video, "CreateVideoDecoder"))
     return -1;
-  VideoStreamInfo stream = { .eCodecFormat = VIDEO_CODEC_FORMAT_H264,
+  VideoStreamInfo stream = {
+      .eCodecFormat = video->hevc ? VIDEO_CODEC_FORMAT_H265 : VIDEO_CODEC_FORMAT_H264,
       .nWidth = 1920, .nHeight = 1080, .nFrameRate = 60000,
       .nFrameDuration = 16667, .bIsFramePackage = 1 };
   VConfig config = { .eOutputPixelFormat = PIXEL_FORMAT_NV12,
@@ -492,13 +494,16 @@ static int k2b_setup(int format, int width, int height, int refresh,
                      void *context, int flags)
 {
   (void)context;
-  if (active || format != VIDEO_FORMAT_H264 || width != 1920 ||
+  if (active || (format != VIDEO_FORMAT_H264 && format != VIDEO_FORMAT_H265) || width != 1920 ||
       height != 1080 || refresh != 60 || (flags & DISPLAY_ROTATE_MASK)) {
-    fprintf(stderr, "K2B: supports only H.264 SDR 1920x1080 at 60 Hz without rotation\n");
+    fprintf(stderr, "K2B: supports only H.264/H.265 8-bit SDR 1920x1080 at 60 Hz without rotation\n");
     return -1;
   }
   struct k2b_video *video = calloc(1, sizeof(*video));
   if (!video) return -1;
+  video->hevc = format == VIDEO_FORMAT_H265;
+  fprintf(stderr, "K2B: selected %s hardware decoder, NV12 1920x1080 at 60 Hz\n",
+          video->hevc ? "H.265" : "H.264");
   video->range = configured_range;
   if (pthread_mutex_init(&video->mutex, NULL) != 0) { free(video); return -1; }
   if (pthread_cond_init(&video->ready_cond, NULL) != 0) {

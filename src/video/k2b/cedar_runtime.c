@@ -11,11 +11,11 @@
 #include <string.h>
 #include <sys/stat.h>
 
-enum { BASE, MEMORY, SBM, FBM, VDECODER, VE, ENGINE, H264, VCS, SHIM, LIB_COUNT };
+enum { BASE, MEMORY, SBM, FBM, VDECODER, VE, ENGINE, H264, VCS, H265, SHIM, LIB_COUNT };
 static const char *const libraries[LIB_COUNT] = {
     "libcdc_base.so", "libMemAdapter.so", "libsbm.so", "libfbm.so",
     "libvdecoder.so", "libVE.so", "libvideoengine.so", "libawh264.so",
-    "libvdecVcs.so", "libk2b_cedar54_compat.so"
+    "libvdecVcs.so", "libawh265.so", "libk2b_cedar54_compat.so"
 };
 
 static pthread_mutex_t runtime_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -202,7 +202,7 @@ static int initialize(const char *directory)
     /* GNU typeof obtains the exact types from the fixed vendor declarations.
      * POSIX dlsym function-pointer conversions are supported by this target. */
     __typeof__(&VDecoderRegister) register_decoder;
-    VDecoderCreator *creator;
+    VDecoderCreator *creator, *hevc_creator;
     struct k2b_cedar_api candidate;
     if (check_files(directory) < 0 || check_environment() < 0) return -1;
     if (!resolve_symbol(RTLD_DEFAULT, SHIM, "ioctl")) return -1;
@@ -236,10 +236,14 @@ static int initialize(const char *directory)
     if (!register_decoder) return -1;
     creator = (VDecoderCreator *)resolve_symbol(runtime.handles[H264], H264, "CreateH264Decoder");
     if (!creator) return -1;
+    hevc_creator = (VDecoderCreator *)resolve_symbol(runtime.handles[H265], H265, "CreateH265Decoder");
+    if (!hevc_creator) return -1;
     /* The fixed vendor registration routine has unchecked allocation on OOM.
      * A nonzero return is handled; this cannot recover a vendor-internal crash. */
     if (register_decoder(VIDEO_CODEC_FORMAT_H264, "h264", creator, 0) != 0)
         return fail(ELIBBAD, "registration", "VDecoderRegister", "H.264 registration returned nonzero");
+    if (register_decoder(VIDEO_CODEC_FORMAT_H265, "h265", hevc_creator, 0) != 0)
+        return fail(ELIBBAD, "registration", "VDecoderRegister", "H.265 registration returned nonzero");
     runtime.api = candidate;
     runtime.status.ready = 1;
     return 0;

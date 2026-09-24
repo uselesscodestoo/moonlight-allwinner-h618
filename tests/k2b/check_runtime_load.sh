@@ -54,7 +54,7 @@ if grep -Eq 'PASS:|typed H264 hardware registration' "$logs/negative.stdout" "$l
 fi
 audit_trace "$logs/negative.trace"
 if grep -E 'open(at)?\(' "$logs/negative.trace" |
-    grep -Eq 'lib(cdc_base|MemAdapter|sbm|fbm|vdecoder|VE|videoengine|awh264|vdecVcs|k2b_cedar54_compat)\.so'; then
+    grep -Eq 'lib(cdc_base|MemAdapter|sbm|fbm|vdecoder|VE|videoengine|awh264|vdecVcs|awh265|k2b_cedar54_compat)\.so'; then
     fail 'negative case opened a Cedar library or compat preload'
 fi
 echo 'PASS: missing private environment rejected before Cedar library loading'
@@ -68,10 +68,12 @@ grep -Fxq 'PASS: runtime ready=1 error=0; repeat load returned same API table' "
     fail 'missing successful repeated-load result'
 grep -Fxq 'PASS: typed H264 hardware registration via VDecoderRegister(format=H264, name=h264, bIsSoft=0)' "$logs/positive.stdout" ||
     fail 'missing typed hardware registration result'
+grep -Fxq 'PASS: typed H265 hardware registration via VDecoderRegister(format=H265, name=h265, bIsSoft=0)' "$logs/positive.stdout" ||
+    fail 'missing typed HEVC hardware registration result'
 grep -Fxq 'PASS: memory untouched active=0 references=0 allocations=0 live_bytes=0 peak_bytes=0 pinned=0 quarantined=0 error=0' "$logs/positive.stdout" ||
     fail 'missing untouched memory result'
-for lib in cdc_base MemAdapter sbm fbm vdecoder VE videoengine awh264 vdecVcs k2b_cedar54_compat; do
+for lib in cdc_base MemAdapter sbm fbm vdecoder VE videoengine awh264 vdecVcs awh265 k2b_cedar54_compat; do
     grep -E 'open(at)?\(' "$logs/positive.trace" | grep -F "\"$runtime/lib$lib.so\"" |
         grep -Eq '= [0-9]+$' || fail "no successful private library-open sample: lib$lib.so"
 done
-echo "PASS: native private load, typed H264 hardware registration, untouched memory, no device opens or ioctls; logs: $logs"
+echo "PASS: native private load, typed H264/H265 hardware registration, untouched memory, no device opens or ioctls; logs: $logs"

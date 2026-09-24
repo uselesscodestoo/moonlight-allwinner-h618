@@ -157,6 +157,22 @@ static void test_fragmented_idr(void)
   }
 }
 
+static void test_hevc_idr(void)
+{
+  char bytes[] = {0,0,1,0x40,1, 0,0,1,0x42,1,
+                  0,0,1,0x44,1, 0,0,1,0x26,1};
+  LENTRY entries[] = {
+    {&entries[1], bytes, 5, BUFFER_TYPE_VPS},
+    {&entries[2], bytes + 5, 5, BUFFER_TYPE_SPS},
+    {&entries[3], bytes + 10, 5, BUFFER_TYPE_PPS},
+    {NULL, bytes + 15, 5, BUFFER_TYPE_PICDATA}
+  };
+  DECODE_UNIT unit = valid_unit(entries);
+  unit.fullLength = sizeof(bytes);
+  unit.frameType = FRAME_TYPE_IDR;
+  check_success("HEVC VPS/SPS/PPS/IDR byte order", &unit, bytes, 32);
+}
+
 static void test_maximum_unit(void)
 {
   char *picture = malloc(K2B_AU_MAX_BYTES);
@@ -247,7 +263,6 @@ static void test_invalid_units(void)
   CHECK_BAD_ENTRY("negative fragment length", length, -1);
   CHECK_BAD_ENTRY("minimum fragment length", length, INT_MIN);
   CHECK_BAD_ENTRY("INT_MAX fragment length", length, INT_MAX);
-  CHECK_BAD_ENTRY("VPS fragment", bufferType, BUFFER_TYPE_VPS);
   CHECK_BAD_ENTRY("unknown buffer type", bufferType, 4);
   CHECK_BAD_ENTRY("negative buffer type", bufferType, -1);
   CHECK_BAD_ENTRY("self cycle", next, &changed);
@@ -284,8 +299,8 @@ static void test_bad_later_fragments(void)
   entries[1].length = INT_MAX;
   check_failure("overflowing later length", &unit, 32, K2B_AU_INVALID, 0, 0);
   entries[1].length = sizeof(last);
-  entries[1].bufferType = BUFFER_TYPE_VPS;
-  check_failure("later VPS", &unit, 32, K2B_AU_INVALID, 0, 0);
+  entries[1].bufferType = 4;
+  check_failure("later unknown type", &unit, 32, K2B_AU_INVALID, 0, 0);
   entries[1].bufferType = BUFFER_TYPE_PICDATA;
   entries[1].next = entries;
   check_failure("two-node cycle", &unit, 32, K2B_AU_INVALID, 0, 0);
@@ -300,6 +315,7 @@ int main(void)
 {
   test_valid_units();
   test_fragmented_idr();
+  test_hevc_idr();
   test_maximum_unit();
   test_invalid_units();
   test_bad_later_fragments();

@@ -51,6 +51,7 @@ int main(int argc, char **argv)
     }
     puts("PASS: runtime ready=1 error=0; repeat load returned same API table");
     puts("PASS: typed H264 hardware registration via VDecoderRegister(format=H264, name=h264, bIsSoft=0)");
+    puts("PASS: typed H265 hardware registration via VDecoderRegister(format=H265, name=h265, bIsSoft=0)");
     puts("PASS: memory untouched active=0 references=0 allocations=0 live_bytes=0 peak_bytes=0 pinned=0 quarantined=0 error=0");
     return 0;
 }

@@ -59,7 +59,7 @@ assert_export() {
         awk -v symbol="$2" '$7 != "UND" && $8 == symbol { found=1 } END { exit !found }' ||
         fail "$1 does not export $2"
 }
-for lib in cdc_base MemAdapter sbm fbm vdecoder VE videoengine awh264 vdecVcs; do
+for lib in cdc_base MemAdapter sbm fbm vdecoder VE videoengine awh264 vdecVcs awh265; do
     file="$runtime/lib$lib.so"
     [ -f "$file" ] || fail "missing $file"
     "$readelf" -h "$file" | grep -Eq 'Class: +ELF64' || fail "$lib is not ELF64"
@@ -84,6 +84,7 @@ done
 assert_export libVE.so GetVeOpsS
 assert_export libvideoengine.so VideoEngineCreate
 assert_export libawh264.so CedarPluginVDInit
+assert_export libawh265.so CreateH265Decoder
 assert_export libvdecVcs.so vcsCreate
 # The preload stays independent of every Cedar library, and does not enter the
 # original closure. These are static ELF checks; no produced file is executed.
@@ -124,7 +125,7 @@ load_check="$runtime/k2b_runtime_load_check"
             *) fail "load check has unexpected dependency: $needed" ;;
         esac
     done
-for lib in cdc_base MemAdapter sbm fbm vdecoder VE videoengine awh264 vdecVcs; do
+for lib in cdc_base MemAdapter sbm fbm vdecoder VE videoengine awh264 vdecVcs awh265; do
     if "$readelf" -d "$runtime/lib$lib.so" | grep -F '(NEEDED)' |
         grep -Fq '[libk2b_cedar54_compat.so]'; then
         fail "preload was linked into $lib"
@@ -140,7 +141,7 @@ if "$readelf" -d "$link_check" | grep -F '(NEEDED)' | grep -Fq '[libk2b_cedar54_
     fail 'preload was linked into the complete link check'
 fi
 "$readelf" -h "$link_check" | grep -Eq 'Machine: +AArch64' || fail "link check architecture"
-for lib in cdc_base MemAdapter sbm fbm vdecoder VE videoengine awh264 vdecVcs; do
+for lib in cdc_base MemAdapter sbm fbm vdecoder VE videoengine awh264 vdecVcs awh265; do
     "$readelf" -d "$link_check" | grep -F '(NEEDED)' | grep -Fq "[lib$lib.so]" ||
         fail "link check omitted $lib"
 done
@@ -177,4 +178,4 @@ fi
 grep -Fq 'K2B vendor cedar_ve.h is missing' "$negative/cached-header.log" || fail 'cached header diagnostic'
 configure "$build/positive"
 cmake --build "$build/positive" --parallel 4
-echo 'PASS: nine private ARM64 libraries, independent compat preload and runtime loader, strict complete link, ELF checks, and input rejection checks (no target execution)'
+echo 'PASS: ten private ARM64 libraries, independent compat preload and runtime loader, strict complete link, ELF checks, and input rejection checks (no target execution)'

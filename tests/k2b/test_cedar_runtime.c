@@ -25,10 +25,10 @@
 static const char *const names[] = {
     "libcdc_base.so", "libMemAdapter.so", "libsbm.so", "libfbm.so",
     "libvdecoder.so", "libVE.so", "libvideoengine.so", "libawh264.so",
-    "libvdecVcs.so", "libk2b_cedar54_compat.so"
+    "libvdecVcs.so", "libawh265.so", "libk2b_cedar54_compat.so"
 };
-static char paths[10][128];
-static struct link_map maps[9];
+static char paths[11][128];
+static struct link_map maps[10];
 static int opens, registrations, provider_checks, maps_checks;
 static unsigned int validated_files;
 static const char *pending_error;
@@ -74,14 +74,21 @@ static int fake_memory_pin(const void *a UNUSED, struct k2b_cedar_pin *b UNUSED)
 { CHECK(0); return 0; }
 static int fake_memory_unpin(const struct k2b_cedar_pin *a UNUSED) { CHECK(0); return 0; }
 static DecoderInterface *fake_creator(VideoEngine *a UNUSED) { CHECK(0); return NULL; }
+static DecoderInterface *fake_hevc_creator(VideoEngine *a UNUSED) { CHECK(0); return NULL; }
 static int fake_register(enum EVIDEOCODECFORMAT format, char *desc,
                          VDecoderCreator *creator, int soft)
 {
-    CHECK(format == VIDEO_CODEC_FORMAT_H264 && format == 0x115);
-    CHECK(strcmp(desc, "h264") == 0 && creator == fake_creator && soft == 0);
-    CHECK(opens == 9 && provider_checks == 20 && maps_checks == 2);
+    CHECK(soft == 0);
+    if (!registrations) {
+        CHECK(format == VIDEO_CODEC_FORMAT_H264 && format == 0x115);
+        CHECK(!strcmp(desc, "h264") && creator == fake_creator);
+    } else {
+        CHECK(format == VIDEO_CODEC_FORMAT_H265 && format == 0x116);
+        CHECK(!strcmp(desc, "h265") && creator == fake_hevc_creator);
+    }
+    CHECK(opens == 10 && provider_checks == 21 && maps_checks == 2);
     ++registrations;
-    return fault == REGISTER_FAIL ? -7 : 0;
+    return fault == REGISTER_FAIL && registrations == target + 1 ? -7 : 0;
 }
 static int fake_ioctl(int a UNUSED, unsigned long b UNUSED, ...) { CHECK(0); return 0; }
 
@@ -106,13 +113,14 @@ static const struct symbol symbols[] = {
     {"k2b_cedar_memory_unpin", (void *)fake_memory_unpin, 1},
     {"VDecoderRegister", (void *)fake_register, 6},
     {"CreateH264Decoder", (void *)fake_creator, 7},
-    {"ioctl", (void *)fake_ioctl, 9}
+    {"CreateH265Decoder", (void *)fake_hevc_creator, 9},
+    {"ioctl", (void *)fake_ioctl, 10}
 };
 
 static int path_index(const char *path)
 {
     int i;
-    for (i = 0; i < 10; ++i) if (!strcmp(path, paths[i])) return i;
+    for (i = 0; i < 11; ++i) if (!strcmp(path, paths[i])) return i;
     return -1;
 }
 
@@ -127,7 +135,7 @@ char *__wrap_getenv(const char *name)
         if (fault == ENV_WRONG && i == target) return (char *)"wrong";
         if (i == 2) return fault == ENV_AUDIT ? (char *)"audit.so" : (char *)"";
         if (i == 0) return (char *)ROOT;
-        if (i == 1) return paths[9];
+        if (i == 1) return paths[10];
         return (char *)"1";
     }
     CHECK(0);
@@ -184,9 +192,9 @@ int __wrap_lstat(const char *path, struct stat *st)
 void *__wrap_dlopen(const char *path, int flags)
 {
     int i = path_index(path);
-    CHECK(i == opens && i < 9);
+    CHECK(i == opens && i < 10);
     CHECK(flags == (RTLD_NOW | RTLD_LOCAL));
-    CHECK(validated_files == (1U << 10) - 1 && provider_checks == 1 && maps_checks == 1);
+    CHECK(validated_files == (1U << 11) - 1 && provider_checks == 1 && maps_checks == 1);
     ++opens;
     if (fault == OPEN_FAIL && target == i) { pending_error = "injected dlopen failure"; return NULL; }
     return &maps[i];
@@ -197,7 +205,7 @@ int __wrap_dlclose(void *handle UNUSED) { CHECK(0); return -1; }
 int __wrap_dlinfo(void *handle, int request, void *result)
 {
     int i = (struct link_map *)handle - maps;
-    CHECK(i >= 0 && i < 9 && request == RTLD_DI_LINKMAP);
+    CHECK(i >= 0 && i < 10 && request == RTLD_DI_LINKMAP);
     if (fault == INFO_FAIL && target == i) { pending_error = "injected dlinfo failure"; return -1; }
     if (fault == INFO_WRONG && target == i) maps[i].l_name = (char *)"/outside/library.so";
     *(struct link_map **)result = fault == INFO_NULL && target == i ? NULL : &maps[i];
@@ -217,8 +225,8 @@ void *__wrap_dlsym(void *handle, const char *name)
     CHECK(pending_error == NULL);
     for (i = 0; i < sizeof(symbols) / sizeof(*symbols); ++i) {
         if (strcmp(name, symbols[i].name)) continue;
-        CHECK(handle == (i == 19 ? RTLD_DEFAULT : (void *)&maps[symbols[i].library]));
-        if (i != 19) CHECK(opens == 9 && maps_checks == 2);
+        CHECK(handle == (i == 20 ? RTLD_DEFAULT : (void *)&maps[symbols[i].library]));
+        if (i != 20) CHECK(opens == 10 && maps_checks == 2);
         if (fault == SYMBOL_MISSING && target == (int)i) return NULL;
         if (fault == SYMBOL_DLERROR && target == (int)i) pending_error = "injected dlsym failure";
         return symbols[i].address;
@@ -272,7 +280,7 @@ int __wrap_dl_iterate_phdr(int (*callback)(struct dl_phdr_info *, size_t, void *
         if (fault == PRELOAD_CANONICAL) return visit(callback, data, paths[target]);
         return 0;
     }
-    for (i = 0; i < 9; ++i) {
+    for (i = 0; i < 10; ++i) {
         if (fault == FINAL_MISSING && target == i) continue;
         snprintf(foreign, sizeof(foreign), "/foreign/%s", names[i]);
         rc = visit(callback, data, fault == FINAL_FOREIGN && target == i ? foreign : paths[i]);
@@ -307,7 +315,7 @@ static void success(void)
     check_api(api);
     CHECK(k2b_cedar_runtime_load("/alias", &again) == 0 && again == api);
     CHECK(k2b_cedar_runtime_load(ROOT, &again) == 0 && again == api);
-    CHECK(opens == 9 && registrations == 1);
+    CHECK(opens == 10 && registrations == 2);
     CHECK(k2b_cedar_runtime_status(&st) == 0 && st.ready == 1 && st.error == 0);
     again = &sentinel;
     CHECK(k2b_cedar_runtime_load("/other", &again) == -1 && errno == EXDEV && again == &sentinel);
@@ -340,7 +348,7 @@ static void failure(void)
     CHECK(first.ready == 0 && first.error == saved_errno && first.detail[0]);
     CHECK(memchr(first.detail, 0, sizeof(first.detail)) != NULL);
     if ((fault >= ROOT_REALPATH && fault <= CONFIG_ERROR) || fault == PRELOAD_FOREIGN ||
-        ((fault >= SYMBOL_MISSING && fault <= PROVIDER_REALPATH) && target == 19))
+        ((fault >= SYMBOL_MISSING && fault <= PROVIDER_REALPATH) && target == 20))
         CHECK(opens == 0);
     if (fault == OPEN_FAIL || fault == INFO_FAIL || fault == INFO_NULL || fault == INFO_WRONG)
         CHECK(opens == target + 1);
@@ -350,7 +358,7 @@ static void failure(void)
     if (fault >= SYMBOL_MISSING && fault <= PROVIDER_REALPATH)
         CHECK(strstr(first.detail, symbols[target].name));
     if (fault == REGISTER_FAIL) CHECK(strstr(first.detail, "VDecoderRegister"));
-    CHECK(registrations == (fault == REGISTER_FAIL ? 1 : 0));
+    CHECK(registrations == (fault == REGISTER_FAIL ? target + 1 : 0));
     saved_opens = opens; saved_maps = maps_checks; saved_providers = provider_checks;
     fault = NONE;
     CHECK(k2b_cedar_runtime_load(ROOT, &api) == -1 && errno == saved_errno && api == &sentinel);
@@ -382,7 +390,7 @@ static void concurrent(void)
     for (i = 0; i < 16; ++i) CHECK(pthread_join(threads[i], NULL) == 0);
     for (i = 0; i < 16; ++i) CHECK(thread_apis[i] == thread_apis[0]);
     check_api(thread_apis[0]);
-    CHECK(opens == 9 && registrations == 1);
+    CHECK(opens == 10 && registrations == 2);
     CHECK(pthread_barrier_destroy(&barrier) == 0);
 }
 
@@ -397,9 +405,9 @@ static void run(const char *label, void (*test)(void), enum fault selected, int 
     if (!pid) {
         int i;
         fault = selected; target = index;
-        for (i = 0; i < 10; ++i) {
+        for (i = 0; i < 11; ++i) {
             snprintf(paths[i], sizeof(paths[i]), ROOT "/%s", names[i]);
-            if (i < 9) maps[i].l_name = paths[i];
+            if (i < 10) maps[i].l_name = paths[i];
         }
         test();
         _exit(0);
@@ -419,7 +427,7 @@ int main(void)
     run("invalid arguments do not poison", invalid, NONE, 0);
     run("concurrent publication", concurrent, NONE, 0);
     for (i = ROOT_REALPATH; i <= ROOT_LONG; ++i) run("root gate", failure, (enum fault)i, 0);
-    for (i = 0; i < 10; ++i) {
+    for (i = 0; i < 11; ++i) {
         run("file realpath", failure, FILE_REALPATH, i);
         run("outside symlink", failure, FILE_OUTSIDE, i);
         run("file stat", failure, FILE_STAT, i);
@@ -432,7 +440,7 @@ int main(void)
     run("absent audit accepted", success, ENV_MISSING, 2);
     run("audit rejected", failure, ENV_AUDIT, 2);
     for (i = CONFIG_FILE; i <= CONFIG_ERROR; ++i) run("config gate", failure, (enum fault)i, 0);
-    for (i = 0; i < 9; ++i) {
+    for (i = 0; i < 10; ++i) {
         run("foreign already mapped", failure, PRELOAD_FOREIGN, i);
         run("canonical already mapped", success, PRELOAD_CANONICAL, i);
         run("final missing", failure, FINAL_MISSING, i);
@@ -443,14 +451,14 @@ int main(void)
         run("dlinfo null", failure, INFO_NULL, i);
         run("dlinfo wrong path", failure, INFO_WRONG, i);
     }
-    for (i = 0; i < 20; ++i) {
+    for (i = 0; i < 21; ++i) {
         run("missing symbol", failure, SYMBOL_MISSING, i);
         run("dlerror despite nonnull symbol", failure, SYMBOL_DLERROR, i);
         run("wrong symbol provider", failure, PROVIDER_WRONG, i);
         run("dladdr failure", failure, PROVIDER_FAIL, i);
         run("provider realpath failure", failure, PROVIDER_REALPATH, i);
     }
-    run("registration nonzero", failure, REGISTER_FAIL, 0);
+    for (i = 0; i < 2; ++i) run("registration nonzero", failure, REGISTER_FAIL, i);
     printf("cedar runtime: %u scenarios, %u failures\n", total, failed);
     return failed ? 1 : 0;
 }

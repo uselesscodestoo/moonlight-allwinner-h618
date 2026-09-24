@@ -19,7 +19,7 @@ esac
 [ "$(uname -s)" = Linux ] && [ "$(uname -m)" = aarch64 ] ||
     fail 'requires native Linux AArch64'
 [ -f "$executable" ] && [ -x "$executable" ] || fail "not an executable file: $executable"
-for lib in cdc_base MemAdapter sbm fbm vdecoder VE videoengine awh264 vdecVcs k2b_cedar54_compat; do
+for lib in cdc_base MemAdapter sbm fbm vdecoder VE videoengine awh264 vdecVcs awh265 k2b_cedar54_compat; do
     [ -f "$runtime/lib$lib.so" ] && [ -r "$runtime/lib$lib.so" ] ||
         fail "missing readable regular library: $runtime/lib$lib.so"
 done
@@ -27,7 +27,7 @@ script=$(realpath -e -- "$0")
 root=$(CDPATH= cd -- "$(dirname -- "$script")/../.." && pwd -P)
 manifest="$root/docs/k2b-cedarc-blobs.sha256"
 [ -f "$manifest" ] && [ -r "$manifest" ] || fail "missing blob manifest: $manifest"
-[ "$(wc -l < "$manifest")" -eq 4 ] || fail 'blob manifest must contain exactly four entries'
+[ "$(wc -l < "$manifest")" -eq 5 ] || fail 'blob manifest must contain exactly five entries'
 # Preserve the fixed expected hashes, removing only the pinned archive prefix.
 sed 's@  library/aarch64-none-linux-gnu/@  @' "$manifest" |
     (CDPATH= cd -- "$runtime" && sha256sum -c -) || fail 'private blob SHA256 validation failed'

@@ -46,7 +46,7 @@ function(k2b_add_cedar_runtime)
   endif()
   set(runtime "${CMAKE_CURRENT_BINARY_DIR}/runtime")
   file(MAKE_DIRECTORY "${runtime}")
-  # A separate, opt-in preload artifact. Never link it into the nine-library
+  # A separate, opt-in preload artifact. Never link it into the ten-library
   # Cedar closure or Moonlight; the explicit private launcher controls activation.
   add_library(k2b_cedar54_compat SHARED
     "${_K2B_CEDAR_PROJECT_ROOT}/src/video/k2b/cedar54_compat.c"
@@ -69,10 +69,10 @@ function(k2b_add_cedar_runtime)
 
   file(STRINGS "${_K2B_CEDAR_PROJECT_ROOT}/docs/k2b-cedarc-blobs.sha256" manifest)
   list(LENGTH manifest manifest_count)
-  if(NOT manifest_count EQUAL 4)
-    message(FATAL_ERROR "K2B CedarC blob manifest must contain exactly four entries")
+  if(NOT manifest_count EQUAL 5)
+    message(FATAL_ERROR "K2B CedarC blob manifest must contain exactly five entries")
   endif()
-  foreach(blob VE videoengine awh264 vdecVcs)
+  foreach(blob VE videoengine awh264 vdecVcs awh265)
     set(relative "library/aarch64-none-linux-gnu/lib${blob}.so")
     set(binary "${source}/${relative}")
     if(NOT EXISTS "${binary}")
@@ -175,6 +175,6 @@ function(k2b_add_cedar_runtime)
     BUILD_WITH_INSTALL_RPATH YES INSTALL_RPATH "$ORIGIN"
     LINK_FLAGS "-Wl,--no-as-needed -Wl,--no-allow-shlib-undefined")
   target_link_libraries(k2b_runtime_link_check PRIVATE k2b_vdecoder k2b_sbm k2b_fbm
-    k2b_cdc_base k2b_MemAdapter k2b_VE k2b_videoengine k2b_awh264 k2b_vdecVcs
+    k2b_cdc_base k2b_MemAdapter k2b_VE k2b_videoengine k2b_awh264 k2b_vdecVcs k2b_awh265
     Threads::Threads ${CMAKE_DL_LIBS} m rt)
 endfunction()

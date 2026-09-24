@@ -5,12 +5,15 @@
 #include "../../src/video/k2b/video.c"
 #undef nanosleep
 #undef clock_gettime
+extern int nanosleep(const struct timespec *, struct timespec *);
 
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "FAIL: %s\n", #x); exit(1); } } while (0)
 static struct k2b_video *fixture;
 static int ticks, decodes, requests, returns, presents;
 static int sbm_count, sbm_full;
 static int watchdog_test, idr_requests;
+static int initialized_codec;
+static int codec_test;
 static uint64_t clock_ms;
 void LiRequestIdrFrame(void) { idr_requests++; }
 pthread_t main_thread_id;
@@ -22,6 +25,7 @@ static struct ScMemOpsS memops;
 
 int test_nanosleep(const struct timespec *delay, struct timespec *remaining)
 {
+  if (codec_test) return nanosleep(delay, remaining);
   (void)delay; (void)remaining;
   clock_ms += watchdog_test ? 1000 : 1;
   if (++ticks == (watchdog_test ? 12 : 3)) fixture->stop = 1;
@@ -30,7 +34,7 @@ int test_nanosleep(const struct timespec *delay, struct timespec *remaining)
 static VideoDecoder *create(void) { return (VideoDecoder *)&output; }
 static void destroy(VideoDecoder *d) { (void)d; }
 static int initialize(VideoDecoder *d, VideoStreamInfo *s, VConfig *c)
-{ (void)d; (void)s; (void)c; return 0; }
+{ (void)d; (void)c; initialized_codec = s->eCodecFormat; return 0; }
 static void reset(VideoDecoder *d) { (void)d; }
 static int decode(VideoDecoder *d, int a, int b, int c, int64_t t)
 { (void)d; (void)a; (void)b; (void)c; (void)t; decodes++; return VDECODE_RESULT_FRAME_DECODED; }
@@ -104,6 +108,7 @@ int main(int argc, char **argv)
   v.held[0].release_fd = v.held[1].release_fd = -1;
   CHECK(setenv("K2B_CEDAR_RUNTIME_DIR", "/test-only", 1) == 0);
   video_worker(&v);
+  CHECK(initialized_codec == VIDEO_CODEC_FORMAT_H264);
   if (watchdog_test) {
     CHECK(v.failed);
     CHECK(idr_requests >= 1 && idr_requests <= 5);
@@ -121,6 +126,12 @@ int main(int argc, char **argv)
   CHECK(k2b_input_queue_destroy(&v.queue) == K2B_QUEUE_OK);
   pthread_cond_destroy(&v.ready_cond);
   pthread_mutex_destroy(&v.mutex);
+  codec_test = 1;
+  CHECK(k2b_setup(VIDEO_FORMAT_H265, 1920, 1080, 60, NULL, 0) == 0);
+  CHECK(initialized_codec == VIDEO_CODEC_FORMAT_H265);
+  k2b_stop();
+  k2b_cleanup();
+  CHECK(k2b_setup(VIDEO_FORMAT_H265_MAIN10, 1920, 1080, 60, NULL, 0) != 0);
   puts("video predecode scheduling: PASS");
   return 0;
 }

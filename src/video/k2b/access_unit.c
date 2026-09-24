@@ -24,7 +24,8 @@ int k2b_access_unit_copy(struct k2b_access_unit *out, void *storage,
     if (entry->data == NULL || entry->length <= 0 ||
         (size_t)entry->length > expected - total ||
         (entry->bufferType != BUFFER_TYPE_PICDATA &&
-         entry->bufferType != BUFFER_TYPE_SPS && entry->bufferType != BUFFER_TYPE_PPS))
+         entry->bufferType != BUFFER_TYPE_SPS && entry->bufferType != BUFFER_TYPE_PPS &&
+         entry->bufferType != BUFFER_TYPE_VPS))
       return K2B_AU_INVALID;
     /* Positive lengths bounded by the declared total also terminate cycles. */
     total += (size_t)entry->length;

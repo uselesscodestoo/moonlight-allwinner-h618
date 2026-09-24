@@ -163,7 +163,7 @@ int main(int argc, char **argv)
         return interrupted ? 0 : 1;
     }
     if (argc != 4 || (strcmp(argv[3], "hash") && strcmp(argv[3], "pace"))) {
-        fprintf(stderr, "usage: %s SAMPLE.h264 FRAMES hash|pace\n", argv[0]);
+        fprintf(stderr, "usage: %s SAMPLE.h264|SAMPLE.hevc FRAMES hash|pace\n", argv[0]);
         return 2;
     }
     char *end;
@@ -176,11 +176,15 @@ int main(int argc, char **argv)
     if (!packet || !first || avformat_open_input(&input, argv[1], NULL, NULL) < 0 ||
         avformat_find_stream_info(input, NULL) < 0) return 1;
     int stream = av_find_best_stream(input, AVMEDIA_TYPE_VIDEO, -1, -1, NULL, 0);
-    if (stream < 0 || input->streams[stream]->codecpar->codec_id != AV_CODEC_ID_H264 ||
+    if (stream < 0 ||
+        (input->streams[stream]->codecpar->codec_id != AV_CODEC_ID_H264 &&
+         input->streams[stream]->codecpar->codec_id != AV_CODEC_ID_HEVC) ||
         input->streams[stream]->codecpar->width != 1920 ||
         input->streams[stream]->codecpar->height != 1080) return 1;
     video_k2b_configure(COLOR_RANGE_LIMITED);
-    if (decoder_callbacks_k2b.setup(VIDEO_FORMAT_H264, 1920, 1080, 60, NULL, 0))
+    int format = input->streams[stream]->codecpar->codec_id == AV_CODEC_ID_HEVC ?
+        VIDEO_FORMAT_H265 : VIDEO_FORMAT_H264;
+    if (decoder_callbacks_k2b.setup(format, 1920, 1080, 60, NULL, 0))
         return 1;
     uint64_t start = now_ns(), deadline = start + 90000000000ULL;
     unsigned sent = 0;
