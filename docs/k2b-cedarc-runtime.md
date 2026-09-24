@@ -95,11 +95,75 @@ sh tests/k2b/check_cedar_abi.sh \
 `42910bf9b511239b4589fd18616606e5b33c523eef4e607a97fd25e0fb2de24b`。
 这些是定位源快照的辅助信息，不替代整体归档、ABI 检查或板端运行验证。
 
-## 生产接入前仍需处理
+本地另备 `F:/temp/projects/k2b-vendor-display-ve-headers-20260924.tar`，
+只含实际厂商的 `include/video/sunxi_display2.h` 和
+`drivers/media/cedar-ve/cedar_ve.h`，保留相对目录；未同步上板。
+归档 SHA256 为
+`c3e8fb59d72d72243690f73769e0d9ce9c6622cc5f14fc34823a25702fab3cc1`。
+从归档流式读取的两个文件哈希已分别与开发记录和上面的原文件哈希核对。
+它供后续显式外部头文件路径使用，不是替换板端系统头文件的安装包。
 
-探针 `cedar_mem.c` 的 checked/未知指针路径会 abort，close 会尝试释放
-残留分配。生产路径必须把失败传递、显示持有和停止顺序纳入统一状态；
-不能在 DE 仍可能读取时借用探针 close 的清理逻辑释放缓冲区。
+## 项目内内存适配器
+
+实现提交 `5a7a751` 新增 `src/video/k2b/cedar_memory.{h,c}`，导出真实
+ScMemOpsS 入口，并增加 begin/end/status/describe/pin/unpin。它使用
+实际厂商 UAPI 和项目 CMA 导出器，不是仅供测试的模拟 allocator。
+没有把 probe 的 abort 或残留强制释放搬入新实现。
+
+必须由上层在创建/初始化解码器之前 begin，并在显示已退役、图片已归还、
+解码器已销毁后 end。end 不能替上层退役显示。pin 只阻止 pfree，不阻止
+ReturnPicture 后的 VPU 写入；正常呈现仍需要 CedarC 图片持有协议。
+首错在进程内保持，不提供清除错误、强制释放或自动重新打开的接口。
+
+新增 `test-memory` 使用真实适配器，仅包装系统调用；54 个隔离场景覆盖
+正常退出、失败保留、范围/ABI/引用/pin 与线程使用。普通、NDEBUG、
+ASan/UBSan 及单独的 TSan 构建均已由主执行者复跑通过。独立规格审查和后续质量审查均无
+待修复项。metadata 分配失败及计数/token 极限只有代码检查，未故障注入。
+故障场景的预期保留不等价于正常退出零残留，也不当作已验证的硬件恢复。
+
+Linux 仓库根执行：
+
+```sh
+make -B -f tests/k2b/Makefile test-memory CC=cc \
+  BUILD_DIR=build/k2b-memory \
+  K2B_CEDARC_HEADERS=/mnt/f/temp/projects/cedarx_test/libcedarc-tina/include \
+  K2B_VENDOR_CEDAR_HEADERS=/mnt/f/work/source/aw-image-build/source/kernel/linux-5.4-h618/drivers/media/cedar-ve
+# 普通/NDEBUG 使用不同 BUILD_DIR；后者增加 CPPFLAGS=-DNDEBUG。
+```
+
+每次运行该目标都会对所选真实头文件和源文件做语法/ABI 检查，防止缓存
+二进制掩盖换根后的不兼容头文件。父进程实际复核了缓存情况下缺少头文件
+和换位 ScMemOpsS 负例均失败。改编译标志或头文件根目录仍用 `-B` 重建。
+
+另在真实 WSL 非 K2B 主机、不包装系统调用的短程序中调用 begin，得到
+ENODEV、active=0、零分配/引用。这只验证本地身份拒绝路径；没有打开
+真实板卡设备，更没有验证 K2B 上的成功初始化。
+
+已构建 `build/k2b-cross/libMemAdapter.so`，使用真实系统调用实现、
+`-fPIC -shared -pthread -Wl,-z,defs,-soname,libMemAdapter.so`，产物为
+ARM aarch64 ELF。readelf 确认预期 MemAdapter 和会话入口导出；本次
+产物 DT_NEEDED 只有 libc，引用符号版本最高为 GLIBC_2.33（fstat）。
+没有加载、安装或传到开发板；目标系统的实际可加载性仍待核对。
+该构建产物 SHA256：
+`3dad9ffaa9369c6ea5669e08e9031f3fd8e3a98221de83868e7925855de1ad81`。
+
+主机日志（忽略的构建目录）：
+
+- `build/k2b-cross/offline-memory-20260924.log`，普通/NDEBUG/ASan+UBSan
+  和交叉构建/ELF 检查；SHA256
+  `57315fff9581e5a2614460b450ef126f0db19302a17d02ce4a1c2ece539ddfb0`。
+- `build/k2b-memory-parent/offline-memory-gates-20260924.log`，缓存头文件
+  拒绝及真实非 K2B 身份拒绝；SHA256
+  `918e6d9d1b0c680bdec6b63e3db1e8a68452d7ff0db11b839be56619ad75919f`。
+- `build/k2b-memory-parent/offline-memory-tsan-20260924.log`，独立 TSan
+  构建的 54 个场景通过，无报告；SHA256
+  `a765b59304426cfa01f655762d1b0e13a3676fcc6dd0fae1ce145b1de63079a5`。
+
+## 生产路径接入仍需处理
+
+新内存组件尚未接入 Moonlight 顶层 CMake、CedarC 初始化包装或显示
+工作线程。需要把已提供的首错传递、显示持有和停止顺序纳入统一状态，
+不能因新库可以编译就绕过实际图片/显示退役门槛。
 
 保留 ENGINE_REQ → DMA 导入 → 显式 UNMAP → ENGINE_REL 顺序，并提供
 带分配大小/偏移的借用 fd 描述。网络输入要在回调返回前取得自有副本，

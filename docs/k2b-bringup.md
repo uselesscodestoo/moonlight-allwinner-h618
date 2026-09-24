@@ -6,7 +6,7 @@
 没有上游 PR 或远程推送。板端仓库为 `/home/kickpi/projects/moonlight-embedded`，
 本地工作树为 `F:/temp/moonlight-embedded/.worktrees/k2b-cedarc-disp`。
 
-已完成构建准备、严格 NV12 布局契约、厂商 disp 配置转换及压缩输入复制/队列，**尚未接入生产解码/显示后端，
+已完成构建准备、严格 NV12 布局契约、厂商 disp 配置转换、压缩输入复制/队列及独立 CedarC 内存组件，**尚未接入生产解码/显示后端，
 也没有达到实际 1080p60 串流验收**。当前二进制仍是原有 SDL 后端构建基线，
 只编译、未运行串流，不能把它当作 K2B 的最终输出路径。
 
@@ -257,3 +257,16 @@ TSAN_OPTIONS=halt_on_error=1 ./build/k2b-linux-parent/test_input_queue_tsan
 
 同时重跑原有 frame/access_unit/disp 普通和 NDEBUG 测试，各为
 59/272/396 项通过。没有访问开发板、修改内核或启用新的平台选项。
+
+## CedarC 内存组件离线落地
+
+`5a7a751` 已实现实际 ScMemOpsS/DMA 系统调用路径、显式 VE 会话、
+首错诊断、隔离资源和 pin 所有权检查。54 场景的普通、NDEBUG、
+ASan/UBSan 及单独 TSan 复跑通过，ARM64 libMemAdapter.so 已交叉构建但未加载。
+ABI 正反例及缓存头文件拒绝检查也通过；命令、产物/日志哈希、
+真实硬件未验证边界详见 [私有运行库记录](k2b-cedarc-runtime.md)。
+
+这个组件尚未与 CedarC 解码循环和 Moonlight 回调连接。下一步是项目
+私有运行库构建/加载与解码工作线程接入，之后仍需解决、验证真实显示
+退役和持续串流。未把内存适配器单测视作 1080p60 完成。
+开发板仍离线，最后同步位置仍为 `acfd079`。

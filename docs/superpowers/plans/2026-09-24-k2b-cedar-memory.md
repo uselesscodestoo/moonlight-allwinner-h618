@@ -22,7 +22,7 @@
 
 ## Task 1：显式会话与真实 CedarC 接口
 
-- [ ] 写最小拒绝桩与以下成功链测试，确认 RED 后实现，不先写完整实现。
+- [x] 写最小拒绝桩与以下成功链测试，确认 RED 后实现，不先写完整实现。
 
 ```c
 CHECK(k2b_cedar_memory_begin() == 0);
@@ -70,7 +70,7 @@ int MemAdapterGetDramFreq(void);
 不支持 signal-handler、fork 后继承活会话、pthread_cancel。正常 end 后可
 再次 begin；正常重连也不重用 pin token。
 
-- [ ] begin 要求会话未活动、首错为 0。只接受 uname release=5.4.125、
+- [x] begin 要求会话未活动、首错为 0。只接受 uname release=5.4.125、
   machine=aarch64、device-tree model 恰为 KICKPI K2B、页大小 4096；
   拒绝在打开 VE 前完成。先开 heap，再开 VE，均 O_RDWR|O_CLOEXEC，
   fstat 确认字符设备，然后 ENGINE_REQ。成功 active=1、references=0。
@@ -80,13 +80,13 @@ int MemAdapterGetDramFreq(void);
   未 ENGINE_REQ 的 Cedar release 安全（release 也会访问全局 DMA 链表）。
   ENGINE_REQ 一旦返回错误，其副作用不确定，保留设备 fd 和故障会话，
   不自动 REL/关闭 VE/重试。begin 活动时 EBUSY，不破坏原会话。
-- [ ] ScMemOps open/open2 仅在健康活动会话内增加 references，溢出报错；
+- [x] ScMemOps open/open2 仅在健康活动会话内增加 references，溢出报错；
   close 只减少引用，不释放分配，不关闭设备。下溢记录 EINVAL，不能 abort。
   分配要求活动、references>0、无首错。end 在仍有引用/分配时 EBUSY，
   不调用 REL；有不确定 ENGINE 状态同样拒绝结束。正常空会话 end 按
   ENGINE_REL、close VE、close heap 顺序执行。REL 失败不重试、不关闭
   VE，保留故障会话；Linux close 错误记录但不重试 fd。没有强制清理 API。
-- [ ] 保留真实 ScMemOpsS 全部字段类型，导出 MemAdapterGetOpsS；secure
+- [x] 保留真实 ScMemOpsS 全部字段类型，导出 MemAdapterGetOpsS；secure
   返回 NULL，DramFreq 返回 -1。提供 open2/debug/get_fd_by_vir，未支持的
   no-cache 或 fd 反向导入回调返回明确 ENOTSUP，不留下可调用 NULL。
   setup/shutdown 不改变会话，offset=0，total_size=96*1024（KiB）。
@@ -94,7 +94,7 @@ int MemAdapterGetDramFreq(void);
 
 ## Task 2：分配登记、范围与持有
 
-- [ ] palloc 接受 1..32 MiB，按 4096 向上对齐；限制会话总分配 96 MiB。
+- [x] palloc 接受 1..32 MiB，按 4096 向上对齐；限制会话总分配 96 MiB。
   登记节点在 ioctl 前分配。按 heap ALLOC(fd返回值，0 也合法)、mmap、
   MAP_DMA_BUF 顺序执行；正常 MAP 结果必须非零且整段落在 32 位 VE
   地址范围内，且不与已登记地址重叠。分配失败返回 NULL，记录首错。
@@ -102,40 +102,41 @@ int MemAdapterGetDramFreq(void);
   因其可能发生在内核登记后 copy_to_user 阶段，保留 mmap/fd/登记节点，
   标记 quarantine，不向 Cedar 返回指针、不盲目 UNMAP/REL。
   MAP 成功但地址无效，同样隔离，不猜测修复。
-- [ ] pfree(NULL) 无操作；只有精确基址可释放，不接受内部指针。未知或
+- [x] pfree(NULL) 无操作；只有精确基址可释放，不接受内部指针。未知或
   pinned 指针记录首错、保留分配。正常执行 UNMAP_DMA_BUF 后才 munmap、
   close DMA fd、移除节点。UNMAP/munmap 失败隔离剩余资源，不自动重试；
   close fd 失败按 Linux 已消费 fd 处理，记录错误、不重试。首错后仍允许
   对其他已知、未隔离、未 pinned 分配执行正常释放，不能再新分配。
-- [ ] ve/cpu 虚实地址转换对已知非隔离分配做范围查找，支持内部偏移，
+- [x] ve/cpu 虚实地址转换对已知非隔离分配做范围查找，支持内部偏移，
   检查溢出；未知返回 NULL。使用 uintptr_t 比较范围，不比较无关 C 指针。
   flush_cache 只允许非负且在单一分配内的范围；0 字节不发 ioctl；
   实际使用厂商 cache_range 的 start/end 地址，不对整个多 MiB SBM
   反复做 DMA_BUF_SYNC。无效/失败记录首错，void 回调不能伪装可返回错误。
-- [ ] describe 给出基址、整个分配大小、输入指针偏移、借用 fd、VE 基址。
+- [x] describe 给出基址、整个分配大小、输入指针偏移、借用 fd、VE 基址。
   fd 不能由调用者关闭；描述符不是新引用。pin 在同一分配最多一个，
   成功分配进程内不回绕 token；满/隔离/首错/未知失败不改输出。
   unpin 验证 token、基址、fd，允许在首错后解除正确 pin；重复/旧 token
   失败且不改变状态。unpin 不释放分配，不代替 ReturnPicture，不证明
   VPU 不会重写图片；正常调用者仍须保留 CedarC 图片直到真实显示退役。
-- [ ] status 给出锁内一致快照。quarantine 计入 allocations/live_bytes；
-  pin/token 不是显示完成证据。debug 输出有界、不访问设备；get_fd_by_vir
+- [x] status 给出锁内一致快照。quarantine 计入 allocations/live_bytes；
+  pin/token 不是显示完成证据。debug 输出有界、不访问设备，返回实际
+  存储字符数（不含 NUL，最大 bytes-1），不是 snprintf 的所需长度；get_fd_by_vir
   只返回已知分配的借用 fd，否则 -1。
 
 ## Task 3：真实逻辑的离线故障验证
 
-- [ ] 只包装 open/read/close/fstat/uname/sysconf/ioctl/mmap/munmap 等
+- [x] 只包装 open/read/close/fstat/uname/sysconf/ioctl/mmap/munmap 等
   外部系统调用；测试适配器真实登记和状态，不模拟成功的高层 allocator。
   每个独立故障用子进程隔离不可恢复的首错/资源保留状态，父进程等待
   明确退出码。正常成功路径必须零分配、零引用、关闭匹配，不能以
   子进程退出替代正常清理的检查。隔离场景明确断言资源被保留。
-- [ ] 覆盖错误身份、重复 begin、未 begin 的 open/alloc、open2 引用、
+- [x] 覆盖错误身份、重复 begin、未 begin 的 open/alloc、open2 引用、
   heap/VE open 失败、ENGINE_REQ/REL 失败、fd0、4K 对齐、32/96 MiB
   边界、ALLOC/mmap/MAP/UNMAP/munmap/close 失败及准确调用顺序。
   覆盖地址边界/溢出/重叠、内部指针范围、flush 零/越界/失败、
   pinned pfree/旧 pin/重复 unpin、残留引用/分配阻止 end、健康重连。
   所有 CHECK 在 NDEBUG 下有效，进程级 alarm 限时；不运行真实设备 ioctl。
-- [ ] Makefile 增加 test-memory，需显式 K2B_CEDARC_HEADERS 指向外部
+- [x] Makefile 增加 test-memory，需显式 K2B_CEDARC_HEADERS 指向外部
   include 目录和 K2B_VENDOR_CEDAR_HEADERS 指向内核 drivers/media/cedar-ve。
   两者缺失即使有缓存也失败；不影响现有 test/test-au/test-queue/test-disp。
   cedar_uapi 包含实际头文件并 C99 编译检查 map=8/cache=16 字节、
@@ -149,7 +150,7 @@ make -B -f tests/k2b/Makefile test-memory CC=cc \
 # 再以 CPPFLAGS=-DNDEBUG 重建运行；ASan/UBSan 检查正常路径及故障路径。
 ```
 
-- [ ] 主执行者复跑测试、编译真实 AArch64 libMemAdapter.so（只构建、不加载）。
+- [x] 主执行者复跑测试、编译真实 AArch64 libMemAdapter.so（只构建、不加载）。
   先独立规格审查，再质量审查；按真实结果更新记录及离线同步检查点。
 
 ## 自检与范围
@@ -165,3 +166,16 @@ open/open2 的测试布局，不复制厂商头文件。先证明旧门禁会错
 单实例会话仍需上层设备独占/内核干净状态检查，不声称库能检测所有外部
 进程或内核异常。未复用 probe 的强制残留释放。ScMemOps 的 pin 只保护
 分配不被 free，不能解决 DE 与 VPU 的画面重用；显示同步门槛保持不变。
+
+## 完成记录（仅此内存组件）
+
+2026-09-24：实现提交 `5a7a751`。TDD 红绿、独立规格审查及随后质量审查
+均完成，无未关闭项。主执行者独立复跑 54 个场景，普通、NDEBUG、
+ASan/UBSan、单独 TSan 均通过；正常场景显式检查清理，故障场景检查
+预期隔离。metadata 分配失败与引用/token 极限只做代码检查，未故障注入。
+缓存错误/缺失头文件门禁、真实非 K2B 主机的初始化拒绝路径也验证通过。
+真实实现已交叉构建为 ARM64 libMemAdapter.so，未加载、安装或上传。
+日志、哈希和复现入口见 `docs/k2b-cedarc-runtime.md`。
+
+本计划完成不代表完整 Moonlight 后端完成：仍须接入私有 CedarC 运行库、
+解码工作线程与显示持有/退役；实际板端兼容性和 1080p60 验收仍待验证。
