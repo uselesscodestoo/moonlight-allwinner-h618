@@ -14,6 +14,34 @@ build=$(CDPATH= cd -- "$3" && pwd)
 cross_cc=${CROSS_CC:-aarch64-linux-gnu-gcc}
 readelf=${READELF:-readelf}
 fail() { echo "FAIL: $*" >&2; exit 1; }
+# Exercise the actual shell entrypoints without faking the host architecture.
+# These directories are valid filesystem paths but have ld.so syntax in them.
+path_fixtures=$(mktemp -d "$build/launch-paths.XXXXXX")
+path_failures=0
+reject_launch_path() {
+    path_log=$1
+    shift
+    if "$@" >"$path_log" 2>&1; then
+        echo "FAIL: unsafe runtime path unexpectedly accepted; log: $path_log" >&2
+        path_failures=$((path_failures + 1))
+    elif ! grep -Fxq 'FAIL: runtime path must not contain whitespace, colon, semicolon, or dollar sign' "$path_log"; then
+        cat "$path_log" >&2
+        echo "FAIL: runtime path did not reach its rejection gate; log: $path_log" >&2
+        path_failures=$((path_failures + 1))
+    fi
+}
+path_case=0
+for component in 'semi;colon' 'token$ORIGIN' 'token${LIB}' 'token$PLATFORM'; do
+    path_case=$((path_case + 1))
+    path_fixture="$path_fixtures/$component"
+    mkdir -- "$path_fixture"
+    reject_launch_path "$path_fixtures/launcher-$path_case.log" \
+        sh "$root/tools/k2b-runtime/run-private.sh" "$path_fixture" /bin/true
+    reject_launch_path "$path_fixtures/load-check-$path_case.log" \
+        sh "$root/tests/k2b/check_runtime_load.sh" "$root" "$path_fixture"
+done
+[ "$path_failures" -eq 0 ] || fail "$path_failures runtime path rejection checks failed"
+echo 'PASS: both shell entrypoints reject ld.so separators and dynamic-token paths'
 configure() {
     configure_dir=$1
     shift

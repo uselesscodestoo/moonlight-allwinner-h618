@@ -7,13 +7,17 @@ unset LD_AUDIT LD_PRELOAD LD_LIBRARY_PATH
 export LC_ALL=C
 fail() { echo "FAIL: $*" >&2; exit 1; }
 [ "$#" -ge 2 ] || { echo "usage: $0 RUNTIME_DIR EXECUTABLE [ARGS...]" >&2; exit 2; }
-[ "$(uname -s)" = Linux ] && [ "$(uname -m)" = aarch64 ] ||
-    fail 'requires native Linux AArch64'
 runtime=$(realpath -e -- "$1")
 executable=$(realpath -e -- "$2")
 shift 2
 [ -d "$runtime" ] || fail "runtime is not a directory: $runtime"
-case "$runtime" in *[[:space:]:]*) fail 'runtime path must not contain whitespace or colon' ;; esac
+# ld.so splits library paths at ':' and ';' and expands dollar tokens.
+case "$runtime" in
+    *[[:space:]:]*|*';'*|*'$'*)
+        fail 'runtime path must not contain whitespace, colon, semicolon, or dollar sign' ;;
+esac
+[ "$(uname -s)" = Linux ] && [ "$(uname -m)" = aarch64 ] ||
+    fail 'requires native Linux AArch64'
 [ -f "$executable" ] && [ -x "$executable" ] || fail "not an executable file: $executable"
 for lib in cdc_base MemAdapter sbm fbm vdecoder VE videoengine awh264 vdecVcs k2b_cedar54_compat; do
     [ -f "$runtime/lib$lib.so" ] && [ -r "$runtime/lib$lib.so" ] ||

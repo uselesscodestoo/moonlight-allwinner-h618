@@ -7,14 +7,18 @@ unset LD_AUDIT LD_PRELOAD LD_LIBRARY_PATH CEDAR_K2B_KERNEL54_COMPAT K2B_CEDAR_RU
 export LC_ALL=C
 fail() { echo "FAIL: $*${logs:+; logs: $logs}" >&2; exit 1; }
 [ "$#" -eq 2 ] || { echo "usage: $0 PROJECT_ROOT RUNTIME_DIR" >&2; exit 2; }
+root=$(realpath -e -- "$1")
+runtime=$(realpath -e -- "$2")
+[ -d "$root" ] && [ -d "$runtime" ] || fail 'project and runtime must be directories'
+# Match the launcher's literal-path restriction before any test execution.
+case "$runtime" in
+    *[[:space:]:]*|*';'*|*'$'*)
+        fail 'runtime path must not contain whitespace, colon, semicolon, or dollar sign' ;;
+esac
 [ "$(uname -s)" = Linux ] && [ "$(uname -m)" = aarch64 ] ||
     fail 'requires native Linux AArch64'
 [ "$(id -u)" -ne 0 ] || fail 'requires a non-root user'
 command -v strace >/dev/null 2>&1 || fail 'strace is required'
-root=$(realpath -e -- "$1")
-runtime=$(realpath -e -- "$2")
-[ -d "$root" ] && [ -d "$runtime" ] || fail 'project and runtime must be directories'
-case "$runtime" in *[[:space:]:]*) fail 'runtime path must not contain whitespace or colon' ;; esac
 launcher="$root/tools/k2b-runtime/run-private.sh"
 load_check="$runtime/k2b_runtime_load_check"
 [ -f "$launcher" ] && [ -r "$launcher" ] || fail "missing launcher: $launcher"
