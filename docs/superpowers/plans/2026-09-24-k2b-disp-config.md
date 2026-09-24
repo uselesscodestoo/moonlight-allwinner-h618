@@ -21,8 +21,8 @@
 
 ## Task 1：先测试，再实现配置转换
 
-- [ ] 新建测试与可编译拒绝桩，先观察有效帧转换返回失败的 RED。
-- [ ] 使用真实头文件，不提交厂商完整头文件、不静默使用虚构 ABI。
+- [x] 新建测试与可编译拒绝桩，先观察有效帧转换返回失败的 RED。
+- [x] 使用真实头文件，不提交厂商完整头文件、不静默使用虚构 ABI。
   `disp_uapi.h` 提供以下包装，并加头文件保护：
 
 ```c
@@ -46,13 +46,13 @@ int k2b_disp_config_prepare(struct disp_layer_config2 *out,
                             uint32_t frame_id);
 ```
 
-- [ ] 有效例验证 fd=0、存储 1920×1088、实际 1920×1080、UV 960×544、
+- [x] 有效例验证 fd=0、存储 1920×1088、实际 1920×1080、UV 960×544、
   目标屏幕 1920×1080、全部四种 matrix/range、紧凑分配、2048 步长、
   非零偶数 crop 的 32.32 转换、frame_id=0/UINT32_MAX，以及禁用压缩/3D/ATW。
-- [ ] 无效例复用布局检查：NULL 输出/输入、负 fd、错误 UV 起点、短分配、
+- [x] 无效例复用布局检查：NULL 输出/输入、负 fd、错误 UV 起点、短分配、
   错尺寸、非法颜色；输出预填 0xa5 后验证失败不会修改任何字节。
   所有检查使用显式计数/非零退出，不依赖 assert。
-- [ ] 实现完整转换体：
+- [x] 实现完整转换体：
 
 ```c
 int k2b_disp_config_prepare(struct disp_layer_config2 *out,
@@ -98,11 +98,11 @@ UV 起点为 stride×存储高；不能把存储高写成可见高。
 EOTF 沿用已验证静态探针的 SDR GAMMA22；不在此函数宣称 HDR 支持。
 `info.id` 仅是提交标签，不把读回该值当成硬件显示证明。
 
-- [ ] Makefile 新增 `test-disp`，仅该目标要求 `K2B_VENDOR_HEADERS`；缺失
+- [x] Makefile 新增 `test-disp`，仅该目标要求 `K2B_VENDOR_HEADERS`；缺失
   路径时先输出明确错误并失败。原来的 `test` 仍不需要厂商文件。
   用 `-idirafter "$(K2B_VENDOR_HEADERS)"` 查找真实头文件，生成
   `build/k2b-tests/test_disp_config`（Windows 加 .exe）。
-- [ ] 在主机正常/NDEBUG 两次强制重建并运行两个测试目标。命令：
+- [x] 在主机正常/NDEBUG 两次强制重建并运行两个测试目标。命令：
 
 ```sh
 make -B -f tests/k2b/Makefile test test-disp \
@@ -111,20 +111,32 @@ make -B -f tests/k2b/Makefile test test-disp CPPFLAGS=-DNDEBUG \
   K2B_VENDOR_HEADERS=F:/work/source/aw-image-build/source/kernel/linux-5.4-h618/include
 ```
 
-- [ ] 独立规格审查、质量审查，处理问题并提交；硬件 ABI 与动态画面仍待上板验证。
+- [x] 独立规格审查、质量审查，处理问题并提交；硬件 ABI 与动态画面仍待上板验证。
 
 ## Task 2：同步接口源码审计
 
-- [ ] 对照 `dev_composer.c`、`dev_disp.c` 和 `disp_manager.c`，检查
+- [x] 对照 `dev_composer.c`、`dev_disp.c` 和 `disp_manager.c`，检查
   DISP_HWC_COMMIT/DISP_HWC_CUSTOM 是否暴露真正的 release fence 或逐帧确认。
   记录配置编译条件、参数 ABI、单帧关联、等待语义、失败和关闭路径。
-- [ ] 区分“源码存在”“板端内核启用”“运行时返回有效完成信号”三种证据。
+- [x] 区分“源码存在”“板端内核启用”“运行时返回有效完成信号”三种证据。
   板端当前离线，后两种缺失时明确标记未验证，不编造可用性结论。
-- [ ] 若可复用 composer fence，给出最小只读/短测验证方案；若不可用，
+- [x] 若可复用 composer fence，给出最小只读/短测验证方案；若不可用，
   明确导出器观测与硬件寄存器证据各自能证明什么，不给出未经证明的回收代码。
-- [ ] 审计文档与配置测试结果写入开发记录，准备网络恢复后的核对清单。
+- [x] 审计文档与配置测试结果写入开发记录，准备网络恢复后的核对清单。
 
 ## 自检
 
 当前阶段只落实已知 ABI 的配置转换和同步证据调查。没有用测试替代实际
 解码/显示验收；不启动硬件，不新增软件渲染回退，不改变旧平台默认选择。
+
+## 离线执行结果
+
+实现提交 `7f89499`。拒绝桩的 8 个有效输入先失败；实现后普通/NDEBUG
+各通过 59 项 frame 检查、396 项 disp 配置检查，主执行者再次强制重建
+验证。独立规格审查通过；质量审查无关键/重要问题，换头文件根目录或
+编译参数时需要 `-B` 的缓存限制已写入开发记录。
+
+审计结果见 `docs/k2b-disp-sync-audit.md`：源码有 composer fence，但
+RCQ/具体缓冲区退役关联未建立，不能直接用于 VPU ReturnPicture。
+审计关键调用链另经独立只读复核；时序风险仅标记为待验证假设。
+本计划的离线项目完成，不代表整个 K2B 后端或 1080p60 目标完成。

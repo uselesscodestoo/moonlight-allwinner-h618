@@ -6,7 +6,7 @@
 没有上游 PR 或远程推送。板端仓库为 `/home/kickpi/projects/moonlight-embedded`，
 本地工作树为 `F:/temp/moonlight-embedded/.worktrees/k2b-cedarc-disp`。
 
-已完成构建准备和严格 NV12 布局契约，**尚未接入生产解码/显示后端，
+已完成构建准备、严格 NV12 布局契约和厂商 disp 配置转换，**尚未接入生产解码/显示后端，
 也没有达到实际 1080p60 串流验收**。当前二进制仍是原有 SDL 后端构建基线，
 只编译、未运行串流，不能把它当作 K2B 的最终输出路径。
 
@@ -109,3 +109,43 @@ disp 配置的转换和可观测的缓冲区退役，不凭 ioctl 成功或固�
 板端最后同步提交为 `acfd079`；此后的本地提交待网络恢复后快进同步。
 上述三组测试已有成功返回，但日志回传未完成，本地不能声称已备份这些
 完整日志。网络恢复后先核对启动 ID、Git 状态和遗留进程，再同步和测试。
+
+## 离线推进：disp 配置与同步审计
+
+实现提交 `7f89499` 增加纯配置转换函数 `k2b_disp_config_prepare()`。
+使用显式指定的厂商 `include/video/sunxi_display2.h`，未复制完整厂商
+头文件或手写替代 ABI。合法的 NV12 帧转换到 channel 0 / layer 0，
+使用 DMA-BUF fd，区分存储高和有效裁剪，覆盖 BT.601/709 全/限幅。
+失败时不修改输出，不执行 ioctl，不转移 fd 所有权。
+
+厂商头文件 SHA256：
+`f573cf66d2aee34373dd4b46c8d16aaaad4d3fd4264caab22abb8f2664a570f4`。
+
+主机普通及 `-DNDEBUG` 各通过 59 项布局检查、396 项配置检查；
+有效输入先在拒绝桩上出现 8 个失败，再实现转换。
+缺少/错误的 `K2B_VENDOR_HEADERS` 时，即使已有缓存产物也明确失败。
+原来的 `test` 目标仍无需厂商头文件。主机命令（MSYS2 Bash）：
+
+```sh
+export PATH=/ucrt64/bin:/usr/bin:$PATH
+mkdir -p build/k2b-tests/tmp
+export TMPDIR="$PWD/build/k2b-tests/tmp"
+export TMP="$TMPDIR" TEMP="$TMPDIR"
+make -B -f tests/k2b/Makefile test test-disp CC=/ucrt64/bin/gcc \
+  K2B_VENDOR_HEADERS=F:/work/source/aw-image-build/source/kernel/linux-5.4-h618/include
+# 再用 CPPFLAGS=-DNDEBUG 强制重建、运行相同目标。
+```
+
+更换编译选项或 `K2B_VENDOR_HEADERS` 根目录时必须用 `-B`；当前 Makefile
+会跟踪所选头文件的时间戳，但不会把根目录参数变化编码为构建依赖。
+本地普通/NDEBUG 重跑日志位于 `build/k2b-tests/offline-host-20260924.log`
+（忽略的构建目录，不纳入 Git）；这不是尚未回传的板端测试日志。
+
+Windows 主机测试不证明 AArch64 的实际 ioctl ABI 或硬件显示正确；
+这批代码尚未同步上板，也没有接入 Moonlight 主构建。
+
+[同步接口审计](k2b-disp-sync-audit.md) 记录了源码中已有的 composer
+release fence，以及它未与 RCQ 事务/指定缓冲区绑定的限制。该文区分
+源码事实、时序风险推演和待上板验证项；尚未据此编写帧回收路径。
+需要先核实运行内核配置，再关联 fence、RCQ 完成、实际扫描地址与
+DMA-BUF 退役。未改变内核、桌面、自启动或原有后端。
