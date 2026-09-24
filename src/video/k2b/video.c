@@ -46,6 +46,9 @@ struct k2b_video {
   uint64_t received, submitted, decoded, displayed, released;
   double decode_ms;
   enum k2b_matrix matrix;
+  int diagnostic_static;
+  int recovering, waiting_idr, diagnostic_drop;
+  unsigned recoveries;
 };
 
 static struct k2b_video *active;
@@ -123,8 +126,8 @@ static int release_signaled(struct k2b_video *video)
   unsigned index = 0;
   while (index < video->held_count) {
     struct held_picture *held = &video->held[index];
-    /* Keep two newer submissions as a cushion for display scanout. */
-    if (held->release_fd < 0 || video->displayed - held->submitted_at < 2) {
+    /* A later submitted frame must have reached the vendor timeline. */
+    if (held->release_fd < 0 || video->displayed - held->submitted_at < 1) {
       index++;
       continue;
     }
@@ -191,6 +194,9 @@ static int submit_input(struct k2b_video *video, const struct k2b_input_view *vi
 
 static int present_picture(struct k2b_video *video, VideoPicture *picture)
 {
+  /* Diagnostic only: hold the first decoded picture to isolate buffer flips. */
+  if (video->diagnostic_static && video->displayed)
+    return video->api->return_picture(video->decoder, picture);
   if (video->held_count >= K2B_HELD_MAX) {
     errno = ENOBUFS;
     return -1;
@@ -210,6 +216,10 @@ static int present_picture(struct k2b_video *video, VideoPicture *picture)
   held->pinned = 1;
   if (k2b_cedar_picture_frame(picture, &y, &uv, video->matrix, video->range, &frame) < 0)
     return -1;
+  if (!video->displayed)
+    fprintf(stderr, "K2B: first NV12 picture %ux%u stride=%u storage_height=%u fd=%d bytes=%zu\n",
+            frame.width, frame.height, frame.stride, frame.storage_height,
+            frame.fd, y.bytes);
   if (k2b_disp_present(video->disp, &frame, (uint32_t)video->decoded,
                        &held->release_fd) < 0)
     return -1;
@@ -220,6 +230,8 @@ static int present_picture(struct k2b_video *video, VideoPicture *picture)
 
 static int initialize_worker(struct k2b_video *video)
 {
+  video->diagnostic_static = getenv("K2B_DIAGNOSTIC_STATIC") != NULL;
+  video->diagnostic_drop = getenv("K2B_DIAGNOSTIC_DROP_FRAME") != NULL;
   const char *directory = getenv("K2B_CEDAR_RUNTIME_DIR");
   if (!directory || !*directory ||
       k2b_cedar_runtime_load(directory, &video->api) < 0)
@@ -309,7 +321,39 @@ static void *video_worker(void *opaque)
   uint64_t next_stats = monotonic_ms() + 5000;
   while (!requested_stop(video)) {
     int progress = 0;
+    pthread_mutex_lock(&video->mutex);
+    int recovering = video->recovering;
+    pthread_mutex_unlock(&video->mutex);
+    if (recovering) {
+      if (leased) {
+        k2b_input_queue_release(video->queue, &input);
+        leased = 0;
+      }
+      k2b_input_queue_discard_pending(video->queue);
+      if (k2b_disp_retire(video->disp) < 0) {
+        fail_worker(video, "recovery display drain"); break;
+      }
+      while (video->held_count)
+        if (release_old_picture(video, 0) < 0) {
+          fail_worker(video, "recovery picture release"); break;
+        }
+      if (requested_stop(video)) break;
+      video->api->reset(video->decoder);
+      if (!memory_healthy(video, "ResetVideoDecoder")) {
+        fail_worker(video, "decoder reset"); break;
+      }
+      video->matrix = 0;
+      pthread_mutex_lock(&video->mutex);
+      video->recovering = 0;
+      video->waiting_idr = 1;
+      pthread_mutex_unlock(&video->mutex);
+      fprintf(stderr, "K2B: recovery %u reset complete; waiting for IDR\n", ++video->recoveries);
+      continue;
+    }
     if (release_signaled(video) < 0) { fail_worker(video, "release fence/picture"); break; }
+    /* Avoid a burst of SET_CONFIG2 calls before the prior flip is observed.
+     * The vendor importer reaps old mappings on the next SET_CONFIG2. */
+    if (video->held_count >= 2) { idle_tick(); continue; }
     if (!leased) {
       int result = k2b_input_queue_take(video->queue, &input, 0);
       if (result == K2B_QUEUE_OK) leased = 1;
@@ -336,7 +380,7 @@ static void *video_worker(void *opaque)
         !memory_healthy(video, "DecodeVideoStream")) {
       fail_worker(video, "DecodeVideoStream"); break;
     }
-    while (video->held_count < 4) {
+    while (video->held_count < 2 && video->submitted) {
       VideoPicture *picture = video->api->request_picture(video->decoder, 0);
       if (!memory_healthy(video, "RequestPicture")) {
         fail_worker(video, "RequestPicture"); break;
@@ -436,12 +480,25 @@ static int k2b_submit(PDECODE_UNIT unit)
   pthread_mutex_lock(&video->mutex);
   int stopped = video->stop || video->failed;
   if (!stopped) video->received++;
+  if (stopped || video->recovering ||
+      (video->waiting_idr && unit->frameType != FRAME_TYPE_IDR)) {
+    pthread_mutex_unlock(&video->mutex);
+    return DR_NEED_IDR;
+  }
+  int injected = video->diagnostic_drop && video->received == 120;
+  int result = injected ? K2B_QUEUE_FULL : k2b_input_queue_push(video->queue, unit);
+  if (result == K2B_QUEUE_OK) {
+    if (video->waiting_idr)
+      fprintf(stderr, "K2B: IDR accepted; resuming video\n");
+    video->waiting_idr = 0;
+    pthread_mutex_unlock(&video->mutex);
+    return DR_OK;
+  }
+  video->recovering = 1;
+  video->waiting_idr = 1;
   pthread_mutex_unlock(&video->mutex);
-  if (stopped) return DR_NEED_IDR;
-  int result = k2b_input_queue_push(video->queue, unit);
-  if (result == K2B_QUEUE_OK) return DR_OK;
-  fprintf(stderr, "K2B: input rejected (%d); reference chain lost, stopping video\n", result);
-  k2b_stop();
+  fprintf(stderr, "K2B: input rejected (%d%s); requesting IDR recovery\n",
+          result, injected ? ", diagnostic drop" : "");
   return DR_NEED_IDR;
 }
 

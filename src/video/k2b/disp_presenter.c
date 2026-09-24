@@ -15,7 +15,7 @@ enum { SCREEN = 0, NEW_CLIENT = 1, DESTROY_CLIENT = 2,
        ACQUIRE_FENCE = 3, SUBMIT_FENCE = 4 };
 struct hwc_sync { int fd; unsigned int count; };
 struct k2b_disp {
-  int fd, client, active;
+  int fd, client, active, last_fence;
   unsigned int sequence;
 };
 
@@ -105,6 +105,7 @@ int k2b_disp_open(struct k2b_disp **out)
   if (!out || *out) { errno = EINVAL; return -1; }
   d = calloc(1, sizeof(*d));
   if (!d) return -1;
+  d->last_fence = -1;
   d->fd = open("/dev/disp", O_RDWR | O_CLOEXEC);
   if (d->fd < 0) goto failed;
   args[0] = SCREEN; args[1] = (unsigned long)(uintptr_t)&output;
@@ -149,7 +150,12 @@ int k2b_disp_present(struct k2b_disp *d, const struct k2b_frame *frame,
     errno = EINVAL;
     return -1;
   }
-  return commit(d, &config, release_fd);
+  if (commit(d, &config, release_fd) < 0) return -1;
+  int retained = fcntl(*release_fd, F_DUPFD_CLOEXEC, 0);
+  if (retained < 0) return -1;
+  if (d->last_fence >= 0) close(d->last_fence);
+  d->last_fence = retained;
+  return 0;
 }
 
 int k2b_disp_retire(struct k2b_disp *d)
@@ -157,8 +163,11 @@ int k2b_disp_retire(struct k2b_disp *d)
   struct disp_layer_config2 blank = {.channel = 0, .layer_id = 0};
   int previous = -1, next = -1;
   if (!d) { errno = EINVAL; return -1; }
+  previous = d->last_fence;
+  d->last_fence = -1;
   /* A vendor fence signals only after a later sequence. Three blank commits
-   * provide two observed transitions and a later SET to reap old imports.
+   * provide observed transitions and a later SET to reap old imports. Wait
+   * for the last picture's fence after the first blank before reaping it.
    * No sleeps stand in for fence readiness. This is a practical vendor-path
    * drain, not a proof of all RCQ corner cases. */
   for (int i = 0; i < 3; ++i) {

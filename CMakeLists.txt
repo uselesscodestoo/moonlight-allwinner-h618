@@ -110,7 +110,7 @@ if(ENABLE_K2B)
     ./src/video/k2b/disp_config.c
     ./src/video/k2b/disp_presenter.c)
   target_compile_options(moonlight PRIVATE "-idirafter${K2B_VENDOR_HEADERS}")
-  target_link_libraries(moonlight PRIVATE k2b_cedar_runtime)
+  target_link_libraries(moonlight k2b_cedar_runtime)
   list(APPEND MOONLIGHT_DEFINITIONS HAVE_K2B)
   list(APPEND MOONLIGHT_OPTIONS K2B)
 endif()

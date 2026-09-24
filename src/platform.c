@@ -240,7 +240,7 @@ bool platform_prefers_codec(enum platform system, enum codecs codec) {
 char* platform_name(enum platform system) {
   switch(system) {
   case K2B:
-    return "Orange Pi Zero 2W CedarC/display";
+      return "KICKPI K2B CedarC/display";
   case PI:
     return "Raspberry Pi (Broadcom)";
   case MMAL:
