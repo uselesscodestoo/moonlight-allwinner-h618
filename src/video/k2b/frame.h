@@ -8,6 +8,9 @@ enum k2b_pixel_format { K2B_PIXEL_NV12 = 1 };
 enum k2b_matrix { K2B_MATRIX_BT601 = 1, K2B_MATRIX_BT709 = 2 };
 enum k2b_range { K2B_RANGE_LIMITED = 1, K2B_RANGE_FULL = 2 };
 
+/* Linear, contiguous NV12: stride, offsets, and allocation size are in bytes;
+ * storage_height is in luma rows; crop_x, crop_y, width, and height are in luma
+ * pixels. The fd is borrowed; validation does not prove its device validity. */
 struct k2b_frame {
   int fd;
   enum k2b_pixel_format format;
