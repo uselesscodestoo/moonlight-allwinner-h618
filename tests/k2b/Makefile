@@ -101,3 +101,13 @@ check-runtime-headers:
 $(RUNTIME_TEST_BINARY): tests/k2b/test_cedar_runtime.c src/video/k2b/cedar_runtime.c src/video/k2b/cedar_runtime.h src/video/k2b/cedar_memory.h $(RUNTIME_HEADER_DEPS) | check-runtime-headers
 	mkdir -p $(BUILD_DIR)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -DTINA_LINUX_SUPPORT=0 -pthread -Isrc/video/k2b $(RUNTIME_INCLUDES) tests/k2b/test_cedar_runtime.c src/video/k2b/cedar_runtime.c $(RUNTIME_WRAPS) $(LDFLAGS) $(LDLIBS) -ldl -o $@
+
+PICTURE_TEST_BINARY := $(BUILD_DIR)/test_cedar_picture$(EXEEXT)
+
+.PHONY: test-picture
+test-picture: $(PICTURE_TEST_BINARY)
+	./$(PICTURE_TEST_BINARY)
+
+$(PICTURE_TEST_BINARY): tests/k2b/test_cedar_picture.c src/video/k2b/cedar_picture.c src/video/k2b/cedar_picture.h src/video/k2b/cedar_memory.h src/video/k2b/frame.c src/video/k2b/frame.h $(RUNTIME_HEADER_DEPS) | check-runtime-headers
+	mkdir -p $(BUILD_DIR)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -DTINA_LINUX_SUPPORT=0 -Isrc/video/k2b $(RUNTIME_INCLUDES) tests/k2b/test_cedar_picture.c src/video/k2b/cedar_picture.c src/video/k2b/frame.c $(LDFLAGS) $(LDLIBS) -o $@

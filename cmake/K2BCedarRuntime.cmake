@@ -124,7 +124,9 @@ function(k2b_add_cedar_runtime)
   # Only this loader is linked by the pure-load check. Cedar symbols are
   # resolved at runtime after private-path and preload-provider validation.
   add_library(k2b_cedar_runtime STATIC
-    "${_K2B_CEDAR_PROJECT_ROOT}/src/video/k2b/cedar_runtime.c")
+    "${_K2B_CEDAR_PROJECT_ROOT}/src/video/k2b/cedar_runtime.c"
+    "${_K2B_CEDAR_PROJECT_ROOT}/src/video/k2b/cedar_picture.c"
+    "${_K2B_CEDAR_PROJECT_ROOT}/src/video/k2b/frame.c")
   target_include_directories(k2b_cedar_runtime PUBLIC ${common_includes}
     "${_K2B_CEDAR_PROJECT_ROOT}/src/video/k2b")
   target_compile_definitions(k2b_cedar_runtime PUBLIC ${common_definitions})
