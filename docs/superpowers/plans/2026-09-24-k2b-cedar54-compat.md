@@ -31,13 +31,13 @@
 
 ## Task 1：明确匹配与 errno 透明的分发
 
-- [ ] 先写能编译的 ENOSYS 最小桩及成功兼容/正常转发测试，观察断言失败，再实现真实逻辑。新增边界先测试失败，不能仅运行事后测试。
-- [ ] 隐藏入口原型为 `int k2b_cedar54_ioctl_dispatch(int fd, unsigned long request, unsigned long raw_arg)`。仅 request 精确等于 0x804UL 时读取环境和身份；其他 request 不访问 model、stat、uname 或 getenv，直接转发原始参数。
-- [ ] `CEDAR_K2B_KERNEL54_COMPAT` 精确为字符串 `1` 才允许兼容；未设置、空串、0、01、1x 都转发。调用者必须在线程启动前设置环境，兼容层不改环境、不缓存身份结果、不支持 signal-handler。
-- [ ] uname release=5.4.125、machine=aarch64；fstat(fd) 与 stat(/dev/cedar_dev) 均成功、都是字符设备、st_rdev 相同。不能只检查调用者 fd 的 mode 而不检查目标 mode。不打开 Cedar 设备；身份校验失败仅转发，不能自创成功或伪造设备错误。
-- [ ] /proc/device-tree/model 以 O_RDONLY|O_CLOEXEC 打开，完整读取到 EOF 或比合法长度更长的边界。只接受精确 KICKPI K2B（可带单个末尾 NUL），拒绝前缀、额外 NUL/字符、嵌入 NUL、过长/短、读取或关闭失败。允许有效 fd=0。循环处理短读；不把未看到完整内容的缓冲区当成字符串成功。
-- [ ] 函数入口保存 errno。身份匹配时返回0并还原入口 errno；不匹配时，在 syscall 前还原入口 errno，让真实 syscall 决定结果/errno。syscall 成功不得泄漏身份探测的 errno，失败必须保留 syscall 的 errno。转发不重试、不改 fd/request/raw_arg，不强制关闭任何调用者 fd。
-- [ ] 单测以链接 --wrap 包装 getenv/uname/stat/fstat/open/read/close/syscall，不能把高层判断函数替换成模拟成功。覆盖所有上述条件、模型短读/fd0/open-read-close 错误、合法模型有无 NUL、目标普通文件、st_rdev 不同、无参数请求的任意 raw_arg 位模式、指针/标量位模式、request 高位、负 fd、syscall 正/0/-1 结果和 errno。assert 在 NDEBUG 下也有效，不访问实际设备。
+- [x] 先写能编译的 ENOSYS 最小桩及成功兼容/正常转发测试，观察断言失败，再实现真实逻辑。新增边界先测试失败，不能仅运行事后测试。
+- [x] 隐藏入口原型为 `int k2b_cedar54_ioctl_dispatch(int fd, unsigned long request, unsigned long raw_arg)`。仅 request 精确等于 0x804UL 时读取环境和身份；其他 request 不访问 model、stat、uname 或 getenv，直接转发原始参数。
+- [x] `CEDAR_K2B_KERNEL54_COMPAT` 精确为字符串 `1` 才允许兼容；未设置、空串、0、01、1x 都转发。调用者必须在线程启动前设置环境，兼容层不改环境、不缓存身份结果、不支持 signal-handler。
+- [x] uname release=5.4.125、machine=aarch64；fstat(fd) 与 stat(/dev/cedar_dev) 均成功、都是字符设备、st_rdev 相同。不能只检查调用者 fd 的 mode 而不检查目标 mode。不打开 Cedar 设备；身份校验失败仅转发，不能自创成功或伪造设备错误。
+- [x] /proc/device-tree/model 以 O_RDONLY|O_CLOEXEC 打开，完整读取到 EOF 或比合法长度更长的边界。只接受精确 KICKPI K2B（可带单个末尾 NUL），拒绝前缀、额外 NUL/字符、嵌入 NUL、过长/短、读取或关闭失败。允许有效 fd=0。循环处理短读；不把未看到完整内容的缓冲区当成字符串成功。
+- [x] 函数入口保存 errno。身份匹配时返回0并还原入口 errno；不匹配时，在 syscall 前还原入口 errno，让真实 syscall 决定结果/errno。syscall 成功不得泄漏身份探测的 errno，失败必须保留 syscall 的 errno。转发不重试、不改 fd/request/raw_arg，不强制关闭任何调用者 fd。
+- [x] 单测以链接 --wrap 包装 getenv/uname/stat/fstat/open/read/close/syscall，不能把高层判断函数替换成模拟成功。覆盖所有上述条件、模型短读/fd0/open-read-close 错误、合法模型有无 NUL、目标普通文件、st_rdev 不同、无参数请求的任意 raw_arg 位模式、指针/标量位模式、request 高位、负 fd、syscall 正/0/-1 结果和 errno。assert 在 NDEBUG 下也有效，不访问实际设备。
 
 ```sh
 make -B -f tests/k2b/Makefile test-compat CC=cc BUILD_DIR=build/k2b-compat
