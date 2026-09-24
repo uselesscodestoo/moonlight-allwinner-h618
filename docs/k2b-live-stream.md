@@ -382,8 +382,150 @@ kernel/stream logs. No test windows or tone processes were left behind.
 Evidence in `F:/temp/projects/`: `k2b-av-soak-20260924.log`,
 `k2b-av-soak-summary-20260924.json`, `k2b-av-soak-kernel-20260924.log`,
 and `k2b-av-soak-{early-state,game-state,six-minute,eight-minute,nine-minute,exit-state}-20260924.log`.
-Production-path fixed-sample pixel comparison and controlled/independent actual
-presentation-rate verification remain separate unfinished acceptance items.
+At this checkpoint production-path fixed-sample pixel comparison and controlled/
+independent actual presentation-rate verification remained unfinished. The pixel
+comparison below closes the former for this sample, not the latter.
+
+### Production-object pixel replay; paced replay not yet passed (19:33–19:42)
+
+The experimental `tests/k2b/replay_video.c` is linked against the same
+`video.c.o`, AU queue and presenter objects as the integrated Moonlight binary.
+A link-time wrapper observes the real display-call boundary and delegates to
+the real presenter. It does not replace the production executable. Hash mode
+reads effective NV12 rows under DMA-BUF CPU-access synchronization; it therefore
+adds deliberate diagnostic overhead and is not a throughput test.
+
+Fixed input SHA256:
+`ccb9c0860c510db82d97c002b4006ec66160b76e4d83845112965e0543575543`,
+`~/projects/cedarx_test/samples/testsrc-1080p60.h264`, 600 H.264 AUs, no B frames.
+Ten frames first matched a newly generated FFmpeg `-pix_fmt nv12` reference.
+All **600 effective 1920x1080 NV12 frames then matched the existing software
+reference**, with 600 distinct hashes. This compares decodes of the same lossy
+bitstream, not the pre-encoding source. The user also confirmed correct-looking
+test imagery. The first full run had four corrupted hash log lines because
+stdout/stderr interleaved; the checker rejected it. Line-buffered single-line
+records and separate output files fixed that test logging issue; the rerun passed.
+
+Successful evidence: `F:/temp/projects/k2b-replay-hash600-lines-20260924.log`,
+its `.stderr`, and `k2b-replay-reference600-20260924.framemd5`.
+601 input AUs (one extra IDR after EOF to drain the streaming pipeline) produced
+600 observed pictures, 19.856 s first-to-last, 30.167 submissions/s WITH hashing.
+There were no video recoveries/discards or reported DE/IOMMU faults at exit.
+`tests/k2b/check_replay_hashes.ps1` checks exact count, ordering and every hash.
+
+The initial no-readback `pace` attempt stalled before its first picture:
+received 5, submitted 1, decoded/displayed 0. It ended without normal cleanup.
+An 8 MiB `cedar_test_heap` DMA-BUF remained attached to `1c0e000.ve`, verified
+through `/sys/kernel/debug/dma_buf/bufinfo` after the process exited. No process
+remained; hardware testing was stopped until reboot rather than reusing that state.
+Failure evidence: `k2b-replay-pace600-20260924.log` and `.stderr`.
+
+One test-tool shutdown defect was isolated without touching hardware: its
+`signal()` calls linked to `__sysv_signal`, and a repeated-signal self-test died
+with exit 130. Changing only the test tool to `sigaction()` makes repeated INT/
+TERM self-tests pass. This establishes the signal-handler defect, not the root
+cause of the no-picture stall. The user authorized necessary board reboots;
+boot ID changed to `7fd6c59b-a203-4f90-b13f-968114321daa`, with zero DMA-BUF
+objects and CMA still 128 MiB. The matching exporter module was reloaded.
+
+### Paced startup fix and production-path retest
+
+A short traced run proved `VideoStreamFrameNum` returned 8 after only one
+submitted AU. Our arbitrary `>= 8` gate prevented the next AU from reaching
+Cedar, while Decode returned no-bitstream and no picture. This run exited
+normally through the corrected signal handler with zero DMA-BUF objects.
+The count cannot be treated as the number of caller-submitted complete AUs.
+
+The first experimental production fix removed that arbitrary threshold and retained the
+actual `RequestVideoStreamBuffer` capacity check, the 8 MiB VBV and bounded
+input queue. A CPU regression first failed against the old code, then passed;
+it also checks that real buffer-allocation backpressure still stops submission.
+The same ten-frame hardware test changed from 0 pictures to all 10 pictures.
+
+Using the updated production objects, the no-readback 600-frame run produced
+600 decoded and displayed submissions in **9.979548 s first-to-last**, or
+**60.022760 submissions/s**. There were 601 input AUs including the drain AU,
+zero recoveries/discards and queue peak 1. Submission intervals ranged from
+7.532 to 25.832 ms, with one interval over 25 ms. These are user-space submission
+intervals, not optical measurements of individual HDMI refreshes.
+DE snapshots showed the active NV12 1920x1080 crop, current timeline progressing
+39 -> 538 over the sampled run, composer skip 0 and manager error 0. Driver
+reported HDMI 60.5–60.6 fps after its initial partial measurement; we do not
+interpret that coarse driver number as an exact refresh-rate measurement.
+After exit there were zero DMA-BUF objects and no DE/IOMMU/Oops/BUG matches.
+
+The updated objects also passed a fresh **600/600 matching, 600 unique** NV12
+hash comparison against the same software reference. Hash mode ran at 30.262
+submissions/s because it intentionally reads and hashes every pixel.
+Evidence: `k2b-replay-fixed-pace600-20260924.{log,stderr,disp}` and
+`k2b-replay-fixed-hash600-20260924.{log,stderr}` in `F:/temp/projects/`.
+The new integrated binary SHA-256 is
+`25c03ceadb377ad9dcddd9364eea227db6559e598389ab9a5d37b0078d318567`.
+The prior game-tested binary is preserved on the board as
+`build/k2b-integrated/moonlight-pre-sbm-fix-edf986e` (SHA `de166f63...7a04`).
+
+**The unrestricted change was not accepted for normal use.** In its normal-launch live
+regression, the user confirmed sound, mouse and picture but reported much higher
+latency. Logs showed a persistent 5–6 queued AUs, and submitted-to-decoded depth
+of about 4, despite steady 60/s progress. A same-parameter run of the preserved
+old binary also retained about 4 queued AUs and that decoder depth; simply
+reverting the startup fix did not eliminate the measured backlog. The current
+evidence does not establish the startup fix as the cause of increased latency.
+
+The existing `K2B_DIAGNOSTIC_DROP_FRAME=1` experiment on the new build triggered
+keyframe recovery and reduced queued AUs to 0–1, with steady 60/s thereafter.
+There were two recoveries (one real initial queue overflow plus the intentional
+AU-120 rejection), eight discarded queued AUs, and normal zero-DMA cleanup.
+The user subsequently confirmed both the old-binary comparison and the recovered
+new-binary run were fluid. Thus queue counters alone do not fully explain the
+subjective difference; the unrestricted change is not treated as a completed
+low-latency fix. Do not
+enable this deliberate-drop diagnostic in the normal launcher or claim that
+latency is fixed. Evidence: `k2b-sbm-fixed-live75-20260924.log`,
+`k2b-sbm-old-live65-20260924.log`, and
+`k2b-sbm-fixed-recovery65-20260924.log` in `F:/temp/projects/`.
+
+The follow-up fix is narrower: bypass the count watermark **only until the
+first decoded picture after initialization or decoder reset**, then preserve
+the original steady-state threshold. The regression covers startup, actual
+buffer-full backpressure, steady-state gating and post-reset startup. It failed
+with the unrestricted version and passed with this narrowed implementation.
+Its 600-frame paced replay produced all 600 pictures in 9.976891 s first-to-last
+(60.039 submissions/s), no video recoveries/discards, queue peak 1 and zero
+DMA-BUF objects after cleanup.
+The subsequent ordinary-launch run passed user observation: picture, sound,
+mouse and latency were all normal, with no diagnostic frame drop enabled.
+Worker duration was 73.170 s; received 4367, decoded 4366, display-submitted 4365
+(one pending picture returned at shutdown). The measured 68.170 s statistics
+window advanced 4090 decoded/display-submitted frames, **59.997 fps**. Queue
+stayed 0–1 after startup, peak 2; recoveries/discards/network-drop messages were
+zero. ALSA wrote 38880 frames with zero recoveries in this intermittent-audio
+run; that is not a continuous-audio endurance result. The preceding ten-minute
+real-game audio/input soak remains the longer functional evidence.
+
+Final narrowed build SHA-256:
+`66d5a7726275b1332e1e738fae8ae6b985b3c7a2d4940c6d9921144dada44848`.
+Its fresh hash-mode run again matched **600/600 frames, 600 distinct hashes**.
+All these final runs cleaned up to zero DMA-BUF objects; the boot's kernel log
+had no `invalid.*address`, `L2 Page`, `Oops`, or `BUG:` matches. CPU frame/AU/
+queue/picture/predecode/retirement checks passed, including timeout retirement
+and persistent signal-handler tests. Evidence is
+`k2b-startup-only-live75-20260924.log`,
+`k2b-startup-only-pace600-20260924.{log,stderr}` and
+`k2b-startup-only-hash600-20260924.{log,stderr}` under `F:/temp/projects/`.
+No claim of optical per-refresh timing or a new ten-minute soak on this last
+startup-only change is made.
+
+To reproduce the two distinct checks (hash mode is NOT a performance test):
+
+```sh
+sh tests/k2b/build_replay_video.sh
+build/k2b-tests/replay_video --signal-check
+sudo sh tools/k2b-runtime/run-private.sh build/k2b-integrated/tools/k2b-runtime/runtime \
+  build/k2b-tests/replay_video ~/projects/cedarx_test/samples/testsrc-1080p60.h264 600 pace
+# Replace pace with hash and keep stdout/stderr in separate files for comparison.
+# K2B_REPLAY_TRACE=1 enables a bounded, observational Cedar API trace.
+```
 
 ## Build / run on this board
 

@@ -45,6 +45,7 @@ struct k2b_video {
   unsigned held_count;
   VideoPicture *pending_picture; /* Decoded, never imported by DE yet. */
   uint64_t received, submitted, decoded, displayed, released;
+  uint64_t decoded_at_reset;
   uint64_t started_ms;
   double decode_ms;
   enum k2b_matrix matrix;
@@ -153,7 +154,12 @@ static int submit_input(struct k2b_video *video, const struct k2b_input_view *vi
   int frames = video->api->stream_frames(video->decoder, 0);
   if (frames < 0 || !memory_healthy(video, "VideoStreamFrameNum"))
     return -1;
-  if (frames >= K2B_SBM_FRAMES)
+  /* Cedar's parsed-stream count is not our submitted-AU count: the paced
+   * sample reports 8 after one AU and still needs the next AU to decode.
+   * Bypass the latency watermark until the first picture after init/reset;
+   * RequestVideoStreamBuffer still enforces actual capacity. Once decoding
+   * starts, preserve the previously tested steady-state throttling. */
+  if (video->decoded > video->decoded_at_reset && frames >= K2B_SBM_FRAMES)
     return 0;
 
   enum k2b_matrix matrix = view->unit.colorspace == COLORSPACE_REC_601 ?
@@ -379,6 +385,7 @@ static void *video_worker(void *opaque)
         fail_worker(video, "decoder reset"); break;
       }
       video->matrix = 0;
+      video->decoded_at_reset = video->decoded;
       pthread_mutex_lock(&video->mutex);
       video->recovering = 0;
       video->waiting_idr = 1;

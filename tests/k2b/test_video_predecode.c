@@ -7,6 +7,7 @@
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "FAIL: %s\n", #x); exit(1); } } while (0)
 static struct k2b_video *fixture;
 static int ticks, decodes, requests, returns, presents;
+static int sbm_count, sbm_full;
 static VideoPicture output;
 static char compressed[64];
 static struct ScMemOpsS memops;
@@ -25,10 +26,10 @@ static void reset(VideoDecoder *d) { (void)d; }
 static int decode(VideoDecoder *d, int a, int b, int c, int64_t t)
 { (void)d; (void)a; (void)b; (void)c; (void)t; decodes++; return VDECODE_RESULT_FRAME_DECODED; }
 static int request_stream(VideoDecoder *d, int n, char **a, int *an, char **b, int *bn, int i)
-{ (void)d; (void)n; (void)i; *a = compressed; *an = sizeof(compressed); *b = NULL; *bn = 0; return 0; }
+{ (void)d; (void)n; (void)i; if (sbm_full) return -1; *a = compressed; *an = sizeof(compressed); *b = NULL; *bn = 0; return 0; }
 static int submit_stream(VideoDecoder *d, VideoStreamDataInfo *s, int i)
 { (void)d; (void)s; (void)i; return 0; }
-static int stream_frames(VideoDecoder *d, int i) { (void)d; (void)i; return 0; }
+static int stream_frames(VideoDecoder *d, int i) { (void)d; (void)i; return sbm_count; }
 static VideoPicture *request_picture(VideoDecoder *d, int i)
 { (void)d; (void)i; requests++; return requests == 1 ? &output : NULL; }
 static int return_picture(VideoDecoder *d, VideoPicture *p)
@@ -56,6 +57,28 @@ void k2b_disp_close(struct k2b_disp *d) { (void)d; }
 
 int main(void)
 {
+  /* Real paced sample reports 8 after only one AU, while Cedar still has
+   * buffer space and needs the next AU before producing its first picture. */
+  struct k2b_video submission = {.api = &api};
+  unsigned char payload[] = {0, 0, 1, 0x41};
+  struct k2b_input_view view = {0};
+  view.data = payload;
+  view.unit.bytes = sizeof(payload);
+  view.unit.colorspace = COLORSPACE_REC_709;
+  sbm_count = 8;
+  CHECK(submit_input(&submission, &view) == 1);
+  CHECK(submission.submitted == 1);
+  sbm_full = 1;
+  CHECK(submit_input(&submission, &view) == 0);
+  CHECK(submission.submitted == 1);
+  sbm_full = 0;
+  submission.decoded = 1;
+  CHECK(submit_input(&submission, &view) == 0);
+  CHECK(submission.submitted == 1);
+  submission.decoded_at_reset = submission.decoded;
+  CHECK(submit_input(&submission, &view) == 1);
+  CHECK(submission.submitted == 2);
+  sbm_full = sbm_count = 0;
   struct k2b_video v = {0};
   fixture = &v;
   CHECK(pthread_mutex_init(&v.mutex, NULL) == 0);
