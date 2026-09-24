@@ -269,4 +269,28 @@ ABI 正反例及缓存头文件拒绝检查也通过；命令、产物/日志哈
 这个组件尚未与 CedarC 解码循环和 Moonlight 回调连接。下一步是项目
 私有运行库构建/加载与解码工作线程接入，之后仍需解决、验证真实显示
 退役和持续串流。未把内存适配器单测视作 1080p60 完成。
-开发板仍离线，最后同步位置仍为 `acfd079`。
+该离线检查点生成时开发板不可达，板端最后同步位置为 `acfd079`。
+
+## 热点恢复后的原生复核
+
+用户恢复热点并确认 IP 未变后，再次连接 `kickpi@10.33.184.81`。
+实测仍为 KICKPI K2B、Linux 5.4.125/aarch64、glibc 2.35、CMA 128 MiB，
+编译工具为 GCC 11.4.0、CMake 3.22.1。启动 ID 为
+`66ed4017-1fae-4b40-82ca-877d257b5175`。没有发现解码/显示探针进程，
+`/dev/cedar_test_heap` 不存在；本次没有加载模块或操作 HDMI。
+
+核对板端工作树干净、分支正确后，验证传输包哈希并用 --ff-only 同步
+`acfd079` → `cc57482`。配套头文件只展开在项目的
+`build/k2b-vendor-headers`，不替换系统头文件；cedar_ve.h 哈希与本地一致。
+板端已有 CedarC 原始归档的 SHA256 也与固定归档一致。
+
+在板端原生编译运行：frame 59 项、access_unit 272 项、disp_config
+396 项、input_queue 与 cedar_memory 54 场景均通过；ABI 正例编译通过，
+错误 TINA 宏与换位 ScMemOpsS 均按指定门禁拒绝。内存测试依然只包装
+系统调用，不访问真实 Cedar/disp。这证明原生用户态测试通过，不能当作
+真实 DMA 或解码/显示通过。原有 `build/baseline` 的 Moonlight 构建亦成功，
+没有执行生成程序。
+
+主机保存日志 `build/k2b-cross/native-resumed-tests-20260924.log`，SHA256：
+`a2d810e28e0faaf92d79532bc67ef43f6f3827f19bb036fd26e2a574041d8351`。
+接下来的私有运行库接入需继续原生编译/解析验证，不沿用旧探针内存库。
