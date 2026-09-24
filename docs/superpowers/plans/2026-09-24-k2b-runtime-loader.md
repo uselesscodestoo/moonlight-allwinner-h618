@@ -21,6 +21,10 @@
 
 ## Task 1：生产 loader 与边界单测
 
+状态：`f08f389` 已实现下列全部检查项；主执行者复跑普通/NDEBUG/ASan+UBSan
+各 242 场景零失败，缓存缺头文件负例按预期拒绝。独立规格与质量审查均通过。
+此状态只覆盖 Task 1，不表示后面的原生加载或硬件验证通过。
+
 创建 `src/video/k2b/cedar_runtime.h`、`cedar_runtime.c` 和
 `tests/k2b/test_cedar_runtime.c`；修改 `tests/k2b/Makefile` 仅增加独立 `test-runtime`。
 实现者不改外部源码、四个 blob、内存组件、旧探针或其他生产文件。

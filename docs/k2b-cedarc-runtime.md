@@ -281,3 +281,33 @@ libdl 使用板端系统库。该诊断不进入目标 main，不作插件注册
 
 显示持有/退役依然按 [disp 同步审计](k2b-disp-sync-audit.md) 的证据门槛
 推进；不能用结构 ABI 编译通过或码流复制单测替代实际 1080p60 验收。
+
+## 私有加载器的本地验证
+
+`f08f389` 增加 `cedar_runtime.{h,c}`：使用真实 CedarC 类型的函数表，
+核对环境、全局配置缺席、十个固定文件、实际映射和符号提供者后，才调用
+有返回值的 `VDecoderRegister(H264, "h264", creator, 0)`。进程内串行初始化，
+成功只注册一次；失败保留首错和已加载句柄，不重试、不卸载。此组件不调用
+解码器、内存会话或 creator。注册来源和二进制初始化边界见
+[插件加载核查](k2b-cedarc-plugin-loading.md)。
+
+主执行者使用真实外部头文件重新编译运行普通、`NDEBUG`、ASan/UBSan 三组
+边界测试，各为 **242 场景、0 失败**；外部边界被包装，未真实加载 Cedar。
+测试包含 16 线程首次调用、九个加载失败位置、20 个符号/提供者位置及
+错误保持、输出不变和禁止提前执行 API。缓存二进制在指定不存在的头文件
+根目录时仍按 `required CedarC header missing: include/vdecoder.h` 拒绝。
+
+```sh
+make -B -f tests/k2b/Makefile test-runtime CC=cc \
+  BUILD_DIR=build/k2b-runtime-parent \
+  K2B_CEDARC_ROOT=/mnt/f/temp/projects/cedarx_test/libcedarc-tina
+# NDEBUG：另用 build/k2b-runtime-parent-ndebug，增加 CPPFLAGS=-DNDEBUG。
+# ASan/UBSan：另用 build/k2b-runtime-parent-asan，使用
+# CFLAGS='-std=c99 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer'
+# LDFLAGS='-fsanitize=address,undefined'。
+```
+
+原有 frame 59 项、access_unit 272 项、input_queue、compat 245 项亦复跑通过。
+独立规格审查后完成独立质量审查，没有待修复项。审查仅覆盖加载器组件。
+真实板端 `dlopen`/注册、受控启动脚本和构建接入仍是下一任务；不能把本节的
+包装测试当成这些步骤已经完成，更不能当成 VPU/HDMI 验收。
