@@ -75,7 +75,9 @@ int MemAdapterGetDramFreq(void);
   拒绝在打开 VE 前完成。先开 heap，再开 VE，均 O_RDWR|O_CLOEXEC，
   fstat 确认字符设备，然后 ENGINE_REQ。成功 active=1、references=0。
   model 文件读/关闭错误应传播，不接受截断或附加非 NUL 数据。
-  heap/VE open 和类型验证失败正常清理已打开的描述符，记录首错；
+  heap open/类型验证失败、VE open 失败只清理已知安全的 heap fd，记录首错；
+  VE fd 已打开而 fstat/类型验证失败时，保留该 fd 和故障会话，不假设
+  未 ENGINE_REQ 的 Cedar release 安全（release 也会访问全局 DMA 链表）。
   ENGINE_REQ 一旦返回错误，其副作用不确定，保留设备 fd 和故障会话，
   不自动 REL/关闭 VE/重试。begin 活动时 EBUSY，不破坏原会话。
 - [ ] ScMemOps open/open2 仅在健康活动会话内增加 references，溢出报错；
