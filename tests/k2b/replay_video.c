@@ -21,6 +21,11 @@
 #include <string.h>
 #include <time.h>
 #include <errno.h>
+#include <pthread.h>
+
+/* No network connection in this replay executable. */
+pthread_t main_thread_id;
+void LiRequestIdrFrame(void) { fprintf(stderr, "REPLAY: IDR requested without network\n"); }
 
 static atomic_uint presented;
 static atomic_int observation_failed;

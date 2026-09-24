@@ -104,6 +104,7 @@ if(ENABLE_K2B)
     message(FATAL_ERROR "K2B display header missing: ${K2B_VENDOR_HEADERS}/video/sunxi_display2.h")
   endif()
   target_sources(moonlight PRIVATE
+    ./src/k2b_network.c
     ./src/video/k2b/video.c
     ./src/video/k2b/access_unit.c
     ./src/video/k2b/input_queue.c

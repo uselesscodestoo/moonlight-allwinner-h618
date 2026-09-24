@@ -527,6 +527,13 @@ sudo sh tools/k2b-runtime/run-private.sh build/k2b-integrated/tools/k2b-runtime/
 # K2B_REPLAY_TRACE=1 enables a bounded, observational Cedar API trace.
 ```
 
+## Campus Wi-Fi recovery follow-up
+
+See [the Wi-Fi recovery checkpoint](k2b-wifi-recovery.md) for the 2026-09-24
+complete-frame starvation, bounded audio shutdown and per-socket receive-buffer
+fixes, deterministic fault tests, and normal campus-network user acceptance.
+Current campus host: `sudo sh tools/k2b-stream.sh 172.31.193.248`.
+
 ## Build / run on this board
 
 ```sh

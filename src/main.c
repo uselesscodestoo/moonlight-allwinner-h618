@@ -144,10 +144,20 @@ static void stream(PSERVER_DATA server, PCONFIGURATION config, enum platform sys
 
   platform_start(system);
   #ifdef HAVE_K2B
-  if (system == K2B)
+  if (system == K2B) {
+    extern void k2b_network_enable(void);
+    k2b_network_enable();
     video_k2b_configure(config->stream.colorRange);
+  }
   #endif
-  LiStartConnection(&server->serverInfo, &config->stream, &connection_callbacks, platform_get_video(system), platform_get_audio(system, config->audio_device), NULL, drFlags, config->audio_device, 0);
+  int start_result = LiStartConnection(&server->serverInfo, &config->stream, &connection_callbacks, platform_get_video(system), platform_get_audio(system, config->audio_device), NULL, drFlags, config->audio_device, 0);
+  if (start_result != 0) {
+    /* LiStartConnection already unwinds its partially initialized streams.
+     * Do not enter an input loop after failure and wait for another signal. */
+    fprintf(stderr, "Stream initialization failed (%d); returning without input loop\n", start_result);
+    platform_stop(system);
+    return;
+  }
 
   if (IS_EMBEDDED(system)) {
     if (!config->viewonly)

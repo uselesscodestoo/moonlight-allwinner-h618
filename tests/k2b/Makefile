@@ -118,6 +118,18 @@ VIDEO_PREDECODE_TEST_BINARY := $(BUILD_DIR)/test_video_predecode$(EXEEXT)
 .PHONY: test-video-predecode
 test-video-predecode: $(VIDEO_PREDECODE_TEST_BINARY)
 	./$(VIDEO_PREDECODE_TEST_BINARY)
+	./$(VIDEO_PREDECODE_TEST_BINARY) watchdog
+
+.PHONY: test-audio-shutdown
+test-audio-shutdown: $(BUILD_DIR)/test_audio_shutdown
+	./$(BUILD_DIR)/test_audio_shutdown normal
+	./$(BUILD_DIR)/test_audio_shutdown wait
+	./$(BUILD_DIR)/test_audio_shutdown stop
+	./$(BUILD_DIR)/test_audio_shutdown cleanup
+
+$(BUILD_DIR)/test_audio_shutdown: tests/k2b/test_audio_shutdown.c src/audio/alsa.c
+	mkdir -p $(BUILD_DIR)
+	$(CC) -std=c11 -O2 -Wall -Wextra -Werror -Wno-unused-parameter -Wno-pointer-sign -DHAVE_K2B -Ithird_party/moonlight-common-c/src $$(pkg-config --cflags alsa opus) $< $$(pkg-config --libs alsa opus) -o $@
 
 $(VIDEO_PREDECODE_TEST_BINARY): tests/k2b/test_video_predecode.c src/video/k2b/video.c src/video/k2b/input_queue.c src/video/k2b/access_unit.c src/video/k2b/cedar_picture.c src/video/k2b/frame.c $(RUNTIME_HEADER_DEPS) | check-runtime-headers
 	mkdir -p $(BUILD_DIR)

@@ -1,13 +1,21 @@
 /* Exercise the actual worker with unavailable hardware replaced at its API
  * boundary. This proves scheduling/ownership, not physical fence semantics. */
 #define nanosleep test_nanosleep
+#define clock_gettime test_clock_gettime
 #include "../../src/video/k2b/video.c"
 #undef nanosleep
+#undef clock_gettime
 
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "FAIL: %s\n", #x); exit(1); } } while (0)
 static struct k2b_video *fixture;
 static int ticks, decodes, requests, returns, presents;
 static int sbm_count, sbm_full;
+static int watchdog_test, idr_requests;
+static uint64_t clock_ms;
+void LiRequestIdrFrame(void) { idr_requests++; }
+pthread_t main_thread_id;
+int test_clock_gettime(clockid_t id, struct timespec *t)
+{ (void)id; t->tv_sec = clock_ms / 1000; t->tv_nsec = clock_ms % 1000 * 1000000; return 0; }
 static VideoPicture output;
 static char compressed[64];
 static struct ScMemOpsS memops;
@@ -15,7 +23,8 @@ static struct ScMemOpsS memops;
 int test_nanosleep(const struct timespec *delay, struct timespec *remaining)
 {
   (void)delay; (void)remaining;
-  if (++ticks == 3) fixture->stop = 1;
+  clock_ms += watchdog_test ? 1000 : 1;
+  if (++ticks == (watchdog_test ? 12 : 3)) fixture->stop = 1;
   return 0;
 }
 static VideoDecoder *create(void) { return (VideoDecoder *)&output; }
@@ -55,8 +64,9 @@ int k2b_disp_present(struct k2b_disp *d, const struct k2b_frame *f, uint32_t id,
 int k2b_disp_retire(struct k2b_disp *d) { (void)d; return 0; }
 void k2b_disp_close(struct k2b_disp *d) { (void)d; }
 
-int main(void)
+int main(int argc, char **argv)
 {
+  watchdog_test = argc == 2 && !strcmp(argv[1], "watchdog");
   /* Real paced sample reports 8 after only one AU, while Cedar still has
    * buffer space and needs the next AU before producing its first picture. */
   struct k2b_video submission = {.api = &api};
@@ -94,6 +104,13 @@ int main(void)
   v.held[0].release_fd = v.held[1].release_fd = -1;
   CHECK(setenv("K2B_CEDAR_RUNTIME_DIR", "/test-only", 1) == 0);
   video_worker(&v);
+  if (watchdog_test) {
+    CHECK(v.failed);
+    CHECK(idr_requests >= 1 && idr_requests <= 5);
+    CHECK(ticks <= 10);
+    puts("video runtime starvation: PASS");
+    return 0;
+  }
   CHECK(decodes == 1); /* Prepare one frame while waiting, then stop decoding. */
   CHECK(requests == 1);
   CHECK(presents == 0); /* Never bypass display retirement. */

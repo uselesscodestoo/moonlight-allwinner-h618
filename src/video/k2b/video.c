@@ -5,10 +5,12 @@
 #include "disp_presenter.h"
 #include "input_queue.h"
 #include "../video.h"
+#include "../../connection.h"
 
 #include <errno.h>
 #include <poll.h>
 #include <pthread.h>
+#include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -47,6 +49,7 @@ struct k2b_video {
   uint64_t received, submitted, decoded, displayed, released;
   uint64_t decoded_at_reset;
   uint64_t started_ms;
+  uint64_t last_input_ms, last_idr_request_ms;
   double decode_ms;
   enum k2b_matrix matrix;
   int diagnostic_static;
@@ -102,6 +105,35 @@ static void fail_worker(struct k2b_video *video, const char *operation)
   video->stop = 1;
   pthread_mutex_unlock(&video->mutex);
   k2b_input_queue_stop(video->queue);
+}
+
+/* Count complete decode units, not incoming UDP fragments. A stream which
+ * worked once must not remain frozen forever while incomplete packets arrive. */
+static int check_input_timeout(struct k2b_video *video)
+{
+  uint64_t now = monotonic_ms();
+  pthread_mutex_lock(&video->mutex);
+  uint64_t last = video->last_input_ms;
+  int stopping = video->stop;
+  pthread_mutex_unlock(&video->mutex);
+  if (stopping) return 0;
+  if (!last) last = video->started_ms;
+  uint64_t silence = now - last;
+  if (silence >= 10000) {
+    errno = ETIMEDOUT;
+    fail_worker(video, "no complete video frame for 10 seconds");
+    /* Wake the existing signalfd main loop; never call LiStopConnection from
+     * this worker, because cleanup must join us. Preserve normal DMA retirement. */
+    if (main_thread_id != 0) pthread_kill(main_thread_id, SIGTERM);
+    return -1;
+  }
+  if (silence >= 2000 && now - video->last_idr_request_ms >= 2000) {
+    video->last_idr_request_ms = now;
+    LiRequestIdrFrame();
+    fprintf(stderr, "K2B: no complete video frame for %llu ms; requesting IDR\n",
+            (unsigned long long)silence);
+  }
+  return 0;
 }
 
 static int release_old_picture(struct k2b_video *video, unsigned index)
@@ -359,6 +391,7 @@ static void *video_worker(void *opaque)
   video->started_ms = monotonic_ms();
   uint64_t next_stats = monotonic_ms() + 5000;
   while (!requested_stop(video)) {
+    if (check_input_timeout(video) < 0) break;
     int progress = 0;
     pthread_mutex_lock(&video->mutex);
     int recovering = video->recovering;
@@ -525,7 +558,10 @@ static int k2b_submit(PDECODE_UNIT unit)
   if (!video || !unit) return DR_NEED_IDR;
   pthread_mutex_lock(&video->mutex);
   int stopped = video->stop || video->failed;
-  if (!stopped) video->received++;
+  if (!stopped) {
+    video->received++;
+    video->last_input_ms = monotonic_ms();
+  }
   if (stopped || video->recovering ||
       (video->waiting_idr && unit->frameType != FRAME_TYPE_IDR)) {
     pthread_mutex_unlock(&video->mutex);

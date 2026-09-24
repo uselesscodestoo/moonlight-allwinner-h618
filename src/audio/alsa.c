@@ -21,6 +21,8 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <stdatomic.h>
+#include <time.h>
 
 #include <opus_multistream.h>
 #include <alsa/asoundlib.h>
@@ -35,6 +37,13 @@ static int channelCount;
 static bool blockingPlayback;
 static unsigned long long framesWritten;
 static unsigned int audioRecoveries;
+static atomic_bool playbackStopped;
+
+static uint64_t audio_now_ms(void) {
+  struct timespec t;
+  clock_gettime(CLOCK_MONOTONIC, &t);
+  return (uint64_t)t.tv_sec * 1000 + t.tv_nsec / 1000000;
+}
 
 static int alsa_renderer_init_common(int audioConfiguration, POPUS_MULTISTREAM_CONFIGURATION opusConfig, void* context, int arFlags, bool blocking) {
   int rc;
@@ -43,6 +52,7 @@ static int alsa_renderer_init_common(int audioConfiguration, POPUS_MULTISTREAM_C
   channelCount = opusConfig->channelCount;
   framesWritten = 0;
   audioRecoveries = 0;
+  atomic_store(&playbackStopped, false);
 
   /* The supplied mapping array has order: FL-FR-C-LFE-RL-RR-SL-SR
    * ALSA expects the order: FL-FR-RL-RR-C-LFE-SL-SR
@@ -74,7 +84,7 @@ static int alsa_renderer_init_common(int audioConfiguration, POPUS_MULTISTREAM_C
     audio_device = "sysdefault";
 
   /* Open PCM device for playback. */
-  CHECK_RETURN(snd_pcm_open(&handle, audio_device, SND_PCM_STREAM_PLAYBACK, blocking ? 0 : SND_PCM_NONBLOCK))
+  CHECK_RETURN(snd_pcm_open(&handle, audio_device, SND_PCM_STREAM_PLAYBACK, SND_PCM_NONBLOCK))
 
   /* Set hardware parameters */
   CHECK_RETURN(snd_pcm_hw_params_malloc(&hw_params));
@@ -109,6 +119,9 @@ static int alsa_renderer_init(int audioConfiguration, POPUS_MULTISTREAM_CONFIGUR
 static int alsa_k2b_renderer_init(int audioConfiguration, POPUS_MULTISTREAM_CONFIGURATION opusConfig, void* context, int arFlags) {
   return alsa_renderer_init_common(audioConfiguration, opusConfig, context, arFlags, true);
 }
+static void alsa_k2b_renderer_stop(void) {
+  atomic_store(&playbackStopped, true);
+}
 #endif
 
 static void alsa_renderer_cleanup() {
@@ -120,7 +133,8 @@ static void alsa_renderer_cleanup() {
   }
 
   if (handle != NULL) {
-    snd_pcm_drain(handle);
+    if (blockingPlayback) snd_pcm_drop(handle);
+    else snd_pcm_drain(handle);
     snd_pcm_close(handle);
     handle = NULL;
   }
@@ -132,11 +146,14 @@ static void alsa_renderer_cleanup() {
 }
 
 static void alsa_renderer_decode_and_play_sample(char* data, int length) {
+  if (blockingPlayback && atomic_load(&playbackStopped)) return;
   int decodeLen = opus_multistream_decode(decoder, data, length, pcmBuffer, samplesPerFrame, 0);
   if (decodeLen > 0) {
     if (blockingPlayback) {
       int offset = 0;
-      while (offset < decodeLen) {
+      uint64_t deadline = audio_now_ms() + 100;
+      while (offset < decodeLen && !atomic_load(&playbackStopped) &&
+             audio_now_ms() < deadline) {
         int written = snd_pcm_writei(handle, pcmBuffer + offset * channelCount, decodeLen - offset);
         if (written > 0) {
           offset += written;
@@ -144,12 +161,14 @@ static void alsa_renderer_decode_and_play_sample(char* data, int length) {
           continue;
         }
         if (written == 0 || written == -EAGAIN) {
-          if (snd_pcm_wait(handle, 100) > 0) continue;
-          fprintf(stderr, "K2B ALSA: playback wait failed\n");
-          return;
+          snd_pcm_wait(handle, 10);
+          continue;
         }
         audioRecoveries++;
-        if (snd_pcm_recover(handle, written, 1) < 0) {
+        /* snd_pcm_recover may repeatedly sleep on a suspended device. Keep
+         * this path bounded and observable by the stop callback instead. */
+        if (written == -EINTR) continue;
+        if ((written != -EPIPE && written != -ESTRPIPE) || snd_pcm_prepare(handle) < 0) {
           fprintf(stderr, "K2B ALSA: playback error %d\n", written);
           return;
         }
@@ -180,10 +199,11 @@ AUDIO_RENDERER_CALLBACKS audio_callbacks_alsa = {
 };
 
 #ifdef HAVE_K2B
-/* Blocking playback belongs on common-c's audio decoder thread, not the
+/* Bounded playback waiting belongs on common-c's audio decoder thread, not the
  * network receive thread. Preserve other platforms' existing ALSA path. */
 AUDIO_RENDERER_CALLBACKS audio_callbacks_alsa_k2b = {
   .init = alsa_k2b_renderer_init,
+  .stop = alsa_k2b_renderer_stop,
   .cleanup = alsa_renderer_cleanup,
   .decodeAndPlaySample = alsa_renderer_decode_and_play_sample,
   .capabilities = CAPABILITY_SUPPORTS_ARBITRARY_AUDIO_DURATION,
