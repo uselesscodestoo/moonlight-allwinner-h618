@@ -311,3 +311,10 @@ make -B -f tests/k2b/Makefile test-runtime CC=cc \
 独立规格审查后完成独立质量审查，没有待修复项。审查仅覆盖加载器组件。
 真实板端 `dlopen`/注册、受控启动脚本和构建接入仍是下一任务；不能把本节的
 包装测试当成这些步骤已经完成，更不能当成 VPU/HDMI 验收。
+
+随后以校验过 SHA256 的 Git bundle 快进同步板端 `bec2651` → `68a8ce7`，
+原生 GCC 11 普通和 `NDEBUG` 各 242 场景零失败，仍是包装边界的单测。
+使用既有 `build/k2b-runtime-native/managed-source` 内固定归档生成的真实
+头文件，没有上传交叉编译库。启动 ID 未变，`/dev/cedar_test_heap` 仍不存在。
+本机保留 `build/k2b-cross/runtime-loader-native-unit-20260924.log`，SHA256：
+`7b8b42731dee86c544483794b1a1c0f8db87d6b4f76cba9a3de3a3b16f82e092`。
