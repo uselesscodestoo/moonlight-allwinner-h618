@@ -26,7 +26,13 @@ if [ -z "${PULSE_SERVER:-}" ] && [ -n "${SUDO_UID:-}" ] &&
         export PULSE_COOKIE="$pulse_home/.config/pulse/cookie"
     fi
 fi
-exec "$root/tools/k2b-runtime/run-private.sh" \
+[ -x "$root/build/k2b-integrated/k2b-fb-unblank" ] || {
+    echo 'Build k2b-fb-unblank before starting (desktop recovery is required).' >&2
+    exit 1
+}
+exec /bin/sh "$root/tools/k2b-managed-session.sh" moonlight-k2b.service \
+    "$root/tools/k2b-restore-desktop.sh" \
+    "$root/tools/k2b-runtime/run-private.sh" \
     "$root/build/k2b-integrated/tools/k2b-runtime/runtime" \
     "$root/build/k2b-integrated/moonlight" stream \
     -platform k2b -app Desktop -1080 -fps 60 -codec h264 -bitrate 15000 \

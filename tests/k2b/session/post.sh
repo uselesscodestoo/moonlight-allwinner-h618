@@ -1,0 +1,2 @@
+#!/bin/sh
+printf 'POST_RESULT=%s EXIT=%s STATUS=%s\n' "$SERVICE_RESULT" "$EXIT_CODE" "$EXIT_STATUS"

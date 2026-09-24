@@ -100,6 +100,7 @@ target_link_libraries(moonlight gamestream)
 
 if(ENABLE_K2B)
   set(K2B_VENDOR_HEADERS "" CACHE PATH "Directory containing video/sunxi_display2.h")
+  add_executable(k2b-fb-unblank tools/k2b-fb-unblank.c)
   if(NOT EXISTS "${K2B_VENDOR_HEADERS}/video/sunxi_display2.h")
     message(FATAL_ERROR "K2B display header missing: ${K2B_VENDOR_HEADERS}/video/sunxi_display2.h")
   endif()

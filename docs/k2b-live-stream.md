@@ -559,9 +559,78 @@ pairing directory, headphone ALSA `pulse`, and bundled controller mappings. Addi
 Moonlight options may follow the host argument, e.g. `-viewonly`.
 Pairing a different host must be done separately using the same key directory.
 
-Ctrl+Alt+Shift+Q or TERM normally stops streaming. The vendor driver may power
-HDMI off after the last `/dev/disp` close; subsequent runs re-enable the existing
-1080p60 configuration. Desktop restoration is not claimed.
+## Managed sessions and XFCE restoration (2026-09-25)
+
+The normal `tools/k2b-stream.sh` launcher now creates a transient systemd service
+named `moonlight-k2b.service`. It is **not** an enabled boot service and does not
+automatically restart or reconnect. Rebuild the K2B target once to produce the
+small `build/k2b-integrated/k2b-fb-unblank` helper. The existing root launcher,
+private libraries, pairings, 1080p60 AVC defaults and user Pulse route are retained.
+
+Ctrl+Alt+Shift+Q exits Moonlight normally. Ctrl+C in the launching terminal asks
+systemd to stop it. The same operation is available from another terminal:
+
+```sh
+sudo systemctl stop moonlight-k2b.service
+sudo journalctl -u moonlight-k2b.service -n 80 --no-pager
+# Standalone recovery after an old/unmanaged session has already stopped:
+sudo sh ~/projects/moonlight-embedded/tools/k2b-restore-desktop.sh
+```
+
+`ExecStopPost` calls the independent recovery script even after an unexpected
+service exit; it does not depend on the original launching terminal. Output is
+stored in the journal and copied to the launching terminal. A failed launch or
+failed post-hook returns failure; exact service exit codes remain in the journal.
+The installed systemd may return a generic status 1 for a process that exits
+nonzero immediately during startup, rather than that process's exact code.
+
+The vendor's last `/dev/disp` close powers HDMI off. Recovery uses debugfs
+`disp0 / blank / 0`, preserving existing timings and color format, then fb0
+`FBIOBLANK(FB_BLANK_UNBLANK)` to restore the existing desktop layer. It never
+restarts Xorg/XFCE and never holds `/dev/disp` open in the background. Driver
+readback checks HDMI power/lock and the enabled desktop layer; optical correctness
+still requires user observation.
+
+Recovery refuses to act while Moonlight or another `/dev/disp` owner is active.
+The wrapper also rejects overlapping managed sessions. systemd automatic SIGKILL
+escalation is disabled. A still-running kernel-stuck process must not be treated
+as a successful stop or have its DMA buffers forcibly recycled. No user-space
+post-hook can guarantee recovery from a hung kernel, power loss, or damaged
+driver state after a forced kill.
+
+Hardware-free lifecycle regression: `sudo python3 tests/k2b/test_managed_session.py`.
+fb0 ioctl regression: `make -f tests/k2b/Makefile test-fb-unblank`.
+The board-only `sudo python3 tests/k2b/test_restore_desktop.py` deliberately
+closes the final test disp handle to recreate no-signal, then checks recovery;
+run it only with no streaming or other display tests in progress.
+
+### Desktop recovery acceptance evidence
+
+On 2026-09-25, all eight hardware-free systemd lifecycle tests passed (normal,
+nonzero, TERM, KILL, worker exec failure, launcher INT, killed launcher, duplicate
+launch). Argument and Pulse environment preservation passed. The fb0 helper's
+success/open-error/ioctl-error cases passed; the two error messages in that unit
+test are deliberate injected failures, not board device errors.
+
+The board test rejected an occupied `/dev/disp`, recovered after the test handle's
+final close, and successfully repeated recovery without replacing the XFCE session.
+The real normal-stop session decoded 5042 frames in 84.465 seconds including
+startup, with no video recovery/discard; systemd called the post-hook, DMA-BUF
+accounting returned to zero, and the user confirmed the original desktop and
+input were normal. A second session stopped by a 40-second SIGINT timeout decoded
+2302 frames (worker 38.824 seconds); it also ran the post-hook and returned DMA-BUF
+accounting to zero. Timeout status 124 is expected for that deliberately timed run.
+The user also confirmed normal XFCE restoration after the second run.
+Audio reported 1 and 3 recoveries respectively; zero audio underruns are not claimed.
+Xorg PID 1329 and XFCE session PID 1477 were unchanged throughout these checks.
+
+No video/audio/decoder source was modified. Reconfiguration refreshed the embedded
+Git version in main and relinked the binary, so its SHA-256 changed to
+`199e013639ab7c21028930a5955e2b8fc36a902d1f7bee8033066b1e6d354ac0`.
+Logs: board `build/k2b-tests/desktop-restore-systemd-stop.log` and
+`desktop-restore-launcher-int.log`; PC copies under `F:/temp/projects/` are named
+`k2b-desktop-restore-systemd-stop-20260925.log` and
+`k2b-desktop-restore-launcher-int-20260925.log`.
 
 `K2B_DIAGNOSTIC_STATIC=1` is a diagnostic only: it holds the first picture while
 decoding/discarding later output. Do not set it for normal use or fps acceptance.

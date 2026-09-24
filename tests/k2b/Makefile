@@ -2,6 +2,14 @@ CC ?= cc
 CFLAGS ?= -std=c99 -O2 -Wall -Wextra -Werror
 CPPFLAGS ?=
 
+.PHONY: test-fb-unblank
+test-fb-unblank: build/k2b-tests/test_fb_unblank
+	./build/k2b-tests/test_fb_unblank
+
+build/k2b-tests/test_fb_unblank: tests/k2b/test_fb_unblank.c tools/k2b-fb-unblank.c
+	mkdir -p build/k2b-tests
+	$(CC) $(CFLAGS) $< -o $@
+
 BUILD_DIR := build/k2b-tests
 EXEEXT :=
 ifeq ($(OS),Windows_NT)
