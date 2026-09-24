@@ -44,6 +44,7 @@ struct k2b_video {
   struct held_picture held[K2B_HELD_MAX];
   unsigned held_count;
   uint64_t received, submitted, decoded, displayed, released;
+  uint64_t started_ms;
   double decode_ms;
   enum k2b_matrix matrix;
   int diagnostic_static;
@@ -293,12 +294,17 @@ static void finish_worker(struct k2b_video *video)
 static void print_stats(struct k2b_video *video)
 {
   struct k2b_input_stats queue;
+  pthread_mutex_lock(&video->mutex);
+  uint64_t received = video->received;
+  pthread_mutex_unlock(&video->mutex);
   if (k2b_input_queue_stats(video->queue, &queue) == K2B_QUEUE_OK)
-    fprintf(stderr, "K2B: received=%llu enqueued=%llu submitted=%llu decoded=%llu display_submitted=%llu released=%llu held=%u queued=%zu decode_ms=%.1f\n",
-        (unsigned long long)video->received, (unsigned long long)queue.accepted,
+    fprintf(stderr, "K2B: received=%llu enqueued=%llu submitted=%llu decoded=%llu display_submitted=%llu released=%llu held=%u queued=%zu decode_ms=%.1f elapsed_ms=%llu recoveries=%u discarded=%llu queue_peak=%zu\n",
+        (unsigned long long)received, (unsigned long long)queue.accepted,
         (unsigned long long)video->submitted, (unsigned long long)video->decoded,
         (unsigned long long)video->displayed, (unsigned long long)video->released,
-        video->held_count, queue.queued, video->decode_ms);
+        video->held_count, queue.queued, video->decode_ms,
+        (unsigned long long)(monotonic_ms() - video->started_ms),
+        video->recoveries, (unsigned long long)queue.discarded, queue.high_watermark);
 }
 
 static void *video_worker(void *opaque)
@@ -318,6 +324,7 @@ static void *video_worker(void *opaque)
 
   struct k2b_input_view input = { 0 };
   int leased = 0;
+  video->started_ms = monotonic_ms();
   uint64_t next_stats = monotonic_ms() + 5000;
   while (!requested_stop(video)) {
     int progress = 0;

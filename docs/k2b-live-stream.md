@@ -83,6 +83,56 @@ It must be unset for ordinary use. Recovery temporarily interrupts video; this
 is not a no-drop/no-latency guarantee. Audio still received no host traffic and
 was not accepted. Full keyboard/gamepad coverage and longer soak tests remain.
 
+### Audio and campus-network follow-up (17:40–18:00)
+
+Sunshine's local `stream_audio=disabled` setting explained the original absence
+of all audio packets. The user enabled it and restarted Sunshine personally.
+Packets then arrived, exposing repeated ALSA EAGAIN/short-write errors and XRUN.
+K2B now uses a blocking ALSA writer on common-c's dedicated audio decoder thread,
+finishing partial writes rather than dropping remaining PCM samples. Other
+platforms retain their original nonblocking/direct-submit selection. Both the
+K2B native build and the existing backend-disabled baseline build passed.
+
+The user clarified that headphones were connected to the board's analog jack.
+A run with `-audio hw:0,0` reported RUNNING, 48 kHz S16 stereo, 1771200 frames
+written and 8 recoveries. Nevertheless, the user heard nothing. Direct board
+`aplay -D plughw:0,0` of a known WAV was also inaudible. **Audio remains unaccepted
+and further audio work was explicitly deferred by the user.** No mixer settings
+were changed. The ALSA change is only a tested write-path improvement, not a
+claim that analog or HDMI sound is working.
+
+Statistics now include monotonic `elapsed_ms`, recoveries, discarded queued
+access units and queue peak. `tools/k2b-log-summary.ps1 -Log PATH` calculates
+rates from measured intervals and explicitly does NOT label them presented FPS.
+It rejects old logs without elapsed time. The analog test's measured window was
+52.667 seconds / 3045 decoded frames = 57.816 fps, with 17 reported network-drop
+events. This is not a 60 fps pass.
+
+A 650-second planned run used 1080p60 / 8 Mbps / ALSA null to focus on video.
+It ended early after 335.290 seconds when the control connection disconnected.
+Final counters: received=11602, decoded=11590, display_submitted=11590,
+recoveries=1, queue_discarded=8. Across the logged 330.281-second window the
+decoded rate was 34.353 fps; 1975 network-drop log events were reported. These
+events are not a count of independently measured missing HDMI frames.
+The kernel recorded WLAN leaving COMPLETED at 17:58:07 and reassociating. The
+Sunshine log recorded disconnect at 17:58:14. Normal video cleanup ran, no new
+DE/IOMMU fault was captured, boot ID stayed unchanged and no moonlight process
+remained. **The ten-minute stability gate was NOT passed.**
+
+Wi-Fi power saving was experimentally disabled at 17:54:04; losses persisted.
+A brief baseline compile also occurred during this trial, so it is not a clean
+CPU-controlled power-saving benchmark. Original power saving was restored after
+the failed run. No persistent network profile change was made. With permission,
+a local 1080p60 ffplay test pattern with frame numbers was opened at 17:55:54;
+it was closed after the stream ended. Its host display was 165 Hz, so this was
+a dynamic-content exercise, not a calibrated HDMI frame-count measurement.
+
+Evidence: `k2b-live-audio-20260924.log`, `k2b-live-analog-20260924.log`,
+`k2b-soak-8mbps-20260924.log`, `k2b-soak-kernel-20260924.log`, and
+`k2b-wifi-powersave-20260924.log` under `F:/temp/projects/`.
+The user is arranging a more stable network. Do not restart board tests until
+that change is ready; recheck both endpoint IPs before the next live run.
+
 ## Build / run on this board
 
 ```sh

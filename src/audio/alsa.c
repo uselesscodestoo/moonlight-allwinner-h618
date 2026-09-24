@@ -31,10 +31,18 @@ static snd_pcm_t *handle;
 static OpusMSDecoder* decoder;
 static short* pcmBuffer;
 static int samplesPerFrame;
+static int channelCount;
+static bool blockingPlayback;
+static unsigned long long framesWritten;
+static unsigned int audioRecoveries;
 
-static int alsa_renderer_init(int audioConfiguration, POPUS_MULTISTREAM_CONFIGURATION opusConfig, void* context, int arFlags) {
+static int alsa_renderer_init_common(int audioConfiguration, POPUS_MULTISTREAM_CONFIGURATION opusConfig, void* context, int arFlags, bool blocking) {
   int rc;
   unsigned char alsaMapping[AUDIO_CONFIGURATION_MAX_CHANNEL_COUNT];
+  blockingPlayback = blocking;
+  channelCount = opusConfig->channelCount;
+  framesWritten = 0;
+  audioRecoveries = 0;
 
   /* The supplied mapping array has order: FL-FR-C-LFE-RL-RR-SL-SR
    * ALSA expects the order: FL-FR-RL-RR-C-LFE-SL-SR
@@ -66,7 +74,7 @@ static int alsa_renderer_init(int audioConfiguration, POPUS_MULTISTREAM_CONFIGUR
     audio_device = "sysdefault";
 
   /* Open PCM device for playback. */
-  CHECK_RETURN(snd_pcm_open(&handle, audio_device, SND_PCM_STREAM_PLAYBACK, SND_PCM_NONBLOCK))
+  CHECK_RETURN(snd_pcm_open(&handle, audio_device, SND_PCM_STREAM_PLAYBACK, blocking ? 0 : SND_PCM_NONBLOCK))
 
   /* Set hardware parameters */
   CHECK_RETURN(snd_pcm_hw_params_malloc(&hw_params));
@@ -93,7 +101,19 @@ static int alsa_renderer_init(int audioConfiguration, POPUS_MULTISTREAM_CONFIGUR
   return 0;
 }
 
+static int alsa_renderer_init(int audioConfiguration, POPUS_MULTISTREAM_CONFIGURATION opusConfig, void* context, int arFlags) {
+  return alsa_renderer_init_common(audioConfiguration, opusConfig, context, arFlags, false);
+}
+
+#ifdef HAVE_K2B
+static int alsa_k2b_renderer_init(int audioConfiguration, POPUS_MULTISTREAM_CONFIGURATION opusConfig, void* context, int arFlags) {
+  return alsa_renderer_init_common(audioConfiguration, opusConfig, context, arFlags, true);
+}
+#endif
+
 static void alsa_renderer_cleanup() {
+  if (blockingPlayback)
+    fprintf(stderr, "K2B ALSA: frames_written=%llu recoveries=%u\n", framesWritten, audioRecoveries);
   if (decoder != NULL) {
     opus_multistream_decoder_destroy(decoder);
     decoder = NULL;
@@ -114,6 +134,28 @@ static void alsa_renderer_cleanup() {
 static void alsa_renderer_decode_and_play_sample(char* data, int length) {
   int decodeLen = opus_multistream_decode(decoder, data, length, pcmBuffer, samplesPerFrame, 0);
   if (decodeLen > 0) {
+    if (blockingPlayback) {
+      int offset = 0;
+      while (offset < decodeLen) {
+        int written = snd_pcm_writei(handle, pcmBuffer + offset * channelCount, decodeLen - offset);
+        if (written > 0) {
+          offset += written;
+          framesWritten += written;
+          continue;
+        }
+        if (written == 0 || written == -EAGAIN) {
+          if (snd_pcm_wait(handle, 100) > 0) continue;
+          fprintf(stderr, "K2B ALSA: playback wait failed\n");
+          return;
+        }
+        audioRecoveries++;
+        if (snd_pcm_recover(handle, written, 1) < 0) {
+          fprintf(stderr, "K2B ALSA: playback error %d\n", written);
+          return;
+        }
+      }
+      return;
+    }
     int rc = snd_pcm_writei(handle, pcmBuffer, decodeLen);
     if (rc < 0) {
       rc = snd_pcm_recover(handle, rc, 0);
@@ -136,3 +178,14 @@ AUDIO_RENDERER_CALLBACKS audio_callbacks_alsa = {
   .decodeAndPlaySample = alsa_renderer_decode_and_play_sample,
   .capabilities = CAPABILITY_DIRECT_SUBMIT | CAPABILITY_SUPPORTS_ARBITRARY_AUDIO_DURATION,
 };
+
+#ifdef HAVE_K2B
+/* Blocking playback belongs on common-c's audio decoder thread, not the
+ * network receive thread. Preserve other platforms' existing ALSA path. */
+AUDIO_RENDERER_CALLBACKS audio_callbacks_alsa_k2b = {
+  .init = alsa_k2b_renderer_init,
+  .cleanup = alsa_renderer_cleanup,
+  .decodeAndPlaySample = alsa_renderer_decode_and_play_sample,
+  .capabilities = CAPABILITY_SUPPORTS_ARBITRARY_AUDIO_DURATION,
+};
+#endif

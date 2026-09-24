@@ -190,6 +190,10 @@ DECODER_RENDERER_CALLBACKS* platform_get_video(enum platform system) {
 
 AUDIO_RENDERER_CALLBACKS* platform_get_audio(enum platform system, char* audio_device) {
   switch (system) {
+#if defined(HAVE_K2B) && defined(HAVE_ALSA)
+  case K2B:
+      return &audio_callbacks_alsa_k2b;
+#endif
   case FAKE:
       return NULL;
   #ifdef HAVE_SDL
