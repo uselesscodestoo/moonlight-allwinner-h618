@@ -8,10 +8,10 @@
 
 **Tech Stack:** POSIX shell, systemd 249, Python standard-library integration tests, C/fbdev, existing native CMake build.
 
-**Execution status (2026-09-25):** Implementation and verification below are complete;
-both real-stream recovery runs were visually accepted by the user. Final commit
-and board metadata synchronization are the remaining handoff operations. Detailed
-results and log paths are in `docs/k2b-live-stream.md`.
+**Execution status (2026-09-25):** Complete. Both real-stream recovery runs were
+visually accepted by the user. Implementation commit `db23fb2` and its exact file
+tree were synchronized to the board, preserving the launcher's pre-existing
+executable-bit difference. Detailed results and log paths are in `docs/k2b-live-stream.md`.
 
 ## Task 1: Prove lifecycle behavior before hardware use
 
@@ -32,4 +32,4 @@ results and log paths are in `docs/k2b-live-stream.md`.
 - [x] Run manual restore twice with no streaming, verify HDMI stays 1080p60 RGB and original Xorg/XFCE PIDs remain.
 - [x] Run a short normal AVC session, stop normally through systemd and inspect post-processing and DMA-BUF cleanup; repeat with INT to the launch wrapper. User confirmed desktop recovery after both runs; no separate subjective audio/latency confirmation was received for these runs.
 - [x] Update `docs/k2b-live-stream.md` with normal start, stop, manual recovery, journal commands and the kernel-hang/forced-kill limitations. Mark the approved design status as accepted.
-- [ ] Run fresh tests and diff checks, commit only this task's changes on `k2b-cedarc-disp`, and synchronize matching files/commit to the board, preserving its existing launcher executable-bit change. No unrelated merge or remote push.
+- [x] Run fresh tests and diff checks, commit only this task's changes on `k2b-cedarc-disp`, and synchronize matching files/commit to the board, preserving its existing launcher executable-bit change. No unrelated merge or remote push.
