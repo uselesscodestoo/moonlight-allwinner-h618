@@ -1,10 +1,10 @@
 # K2B 厂商 disp 同步接口源码审计
 
-日期：2026-09-24。仅离线源码审计，未连接或操作开发板。
+日期：2026-09-24。主体为离线源码审计；文末追加热点恢复后的只读板端配置核查，未操作显示设备。
 
 源码根目录：`F:/work/source/aw-image-build/source/kernel/linux-5.4-h618`。
 下文 `disp/` 指 `drivers/video/fbdev/sunxi/disp2/disp/`。
-结论只适用于这份源码；板端运行内核的配置、实现一致性仍待核对。
+结论只适用于这份源码；板端部分编译配置已核对，源码与运行内核完整实现一致性仍未证明。
 
 ## 结论与证据边界
 
@@ -15,7 +15,7 @@ DMA-BUF 或 RCQ 事务绑定；**尚不能据此安全归还 VPU 帧**。
 | 证据 | 当前状态 | 能证明什么 |
 | --- | --- | --- |
 | `dev_composer.c` 和 H618 defconfig | 已核对 | 源码提供可选 composer fence |
-| 板端运行配置、接口响应 | 待联网 | 当前镜像是否实际启用该接口 |
+| 板端运行配置、接口响应 | composer/sync_file 配置已确认；ioctl 未测 | 当前镜像编入接口，不等于运行行为通过 |
 | fence 与硬件切换、旧帧退役关联 | 未验证 | 持续显示时能否安全复用缓冲区 |
 | 真实解码与 HDMI 1080p60 | 未验收 | 仍须动态内容、逐帧证据与稳定性测试 |
 
@@ -28,7 +28,7 @@ DMA-BUF 或 RCQ 事务绑定；**尚不能据此安全归还 VPU 帧**。
 `DISP2_SUNXI`、选择 `SYNC_FILE`，默认 n；`disp/Makefile` 条件编译
 `dev_composer.o`，`dev_disp.c` 条件调用 `composer_init()`。
 `arch/arm64/configs/linux_h618_defconfig` 设置该项为 y。
-**defconfig 不是板端当前内核配置**，目前没有后者的已核对副本。
+**defconfig 不是板端当前内核配置**；后续只读 `/proc/config.gz` 核查见文末。
 
 `include/video/sunxi_display2.h` 定义 `DISP_HWC_COMMIT=0x0e`。
 `DISP_HWC_CUSTOM=0x13` 在本次 disp 树检索中只有声明，未找到处理入口。
@@ -158,3 +158,31 @@ RCQ_FINISH 路径没有非 RCQ 同步路径中的 `!setting` 条件。这使上�
 
 主机配置测试仅解决 NV12 布局到真实厂商字段的转换。实际硬件的帧退役、
 颜色、逐帧显示、60 fps 与长期稳定性仍是后续独立验收项目。
+
+## 6. 热点恢复后的运行配置核查（只读）
+
+连接 `kickpi@10.33.184.81`，内核 5.4.125/aarch64，启动 ID
+`66ed4017-1fae-4b40-82ca-877d257b5175`。直接读取 `/proc/config.gz` 确认：
+
+- `CONFIG_ARCH_SUN50IW9=y`、`CONFIG_DISP2_SUNXI=y`。
+- `CONFIG_DISP2_SUNXI_COMPOSER=y`、`CONFIG_SYNC_FILE=y`。
+- `CONFIG_DMA_SHARED_BUFFER=y`、`CONFIG_CMA=y`。
+- `CONFIG_DISP2_SUNXI_DEVICE_OFF_ON_RELEASE=y`。
+- `CONFIG_IKCONFIG_PROC=y`、`CONFIG_KALLSYMS=y`、`CONFIG_DEBUG_FS=y`、`CONFIG_KPROBES=y`。
+
+另有 `CONFIG_TRACING_SUPPORT=y`，但 `CONFIG_FTRACE` 明确未启用；不能把
+“支持 KPROBES”直接写成现成 ftrace/动态事件观测已经可用。
+编译默认 CMA 为 16 MiB，当前 `/proc/cmdline` 含 `cma=128M`，
+`/proc/meminfo` 的 CmaTotal 为 131072 kB；运行值以启动覆盖与实测为准。
+
+普通用户读取 `/proc/kallsyms` 能看到 `composer_init`、`hwc_ioctl`、
+`disp_composer_proc`、`disp_mgr_set_layer_config2` 和
+`disp_mgr_protect_reg_for_rcq` 名称（地址被屏蔽为零）。
+没有以未找到独立 `disp_mgr_rcq_finish_irq_handler` 符号为由否定 RCQ，
+因为优化、内联等也会影响符号可见性。
+已确认 sysfs 路径 `/sys/class/disp/disp/attr` 存在，没有读取/写入设备 ioctl，
+也未启用 tracing 或创建 composer 客户端。
+
+这缩小了“当前内核是否编入 composer”的不确定性，但没有验证客户端所有权、
+fence 返回、RCQ 完成对应帧或真正退役。DEVICE_OFF_ON_RELEASE 配置也不能
+单凭名字用于归因此前死机。后续仍按第 5 节的分层门槛验证。
