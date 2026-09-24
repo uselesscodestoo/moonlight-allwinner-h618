@@ -59,6 +59,10 @@ force-freeing residual allocations.
 5. A DMA allocation pin prevents deallocation, not decoder reuse after
    `ReturnPicture`. The decoder must retain each picture until the consumer
    explicitly retires it; a display consumer needs actual retirement evidence.
+   In `fbm.c:FbmReturnPicture`, successful return clears `bUsedByRender` and
+   decrements `nRenderHoldingNum`; if the decoder does not hold the picture,
+   it is immediately enqueued for reuse (or release). Thus even a live fd and
+   an allocation pin cannot substitute for retaining the actual picture.
 6. Reset/destroy must not run with externally held pictures. One controlled
    owner thread drives Cedar; the asynchronous SBM thread is internal to Cedar.
 7. Healthy teardown must establish: no external picture leases; destroy
