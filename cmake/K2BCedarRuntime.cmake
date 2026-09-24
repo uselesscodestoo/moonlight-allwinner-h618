@@ -47,7 +47,7 @@ function(k2b_add_cedar_runtime)
   set(runtime "${CMAKE_CURRENT_BINARY_DIR}/runtime")
   file(MAKE_DIRECTORY "${runtime}")
   # A separate, opt-in preload artifact. Never link it into the nine-library
-  # Cedar closure or Moonlight; a future explicit launcher controls activation.
+  # Cedar closure or Moonlight; the explicit private launcher controls activation.
   add_library(k2b_cedar54_compat SHARED
     "${_K2B_CEDAR_PROJECT_ROOT}/src/video/k2b/cedar54_compat.c"
     "${_K2B_CEDAR_PROJECT_ROOT}/src/video/k2b/cedar54_ioctl_aarch64.S")
@@ -121,6 +121,27 @@ function(k2b_add_cedar_runtime)
   add_library(k2b_vdecoder SHARED "${source}/vdecoder/pixel_format.c" "${source}/vdecoder/vdecoder.c")
 
   find_package(Threads REQUIRED)
+  # Only this loader is linked by the pure-load check. Cedar symbols are
+  # resolved at runtime after private-path and preload-provider validation.
+  add_library(k2b_cedar_runtime STATIC
+    "${_K2B_CEDAR_PROJECT_ROOT}/src/video/k2b/cedar_runtime.c")
+  target_include_directories(k2b_cedar_runtime PUBLIC ${common_includes}
+    "${_K2B_CEDAR_PROJECT_ROOT}/src/video/k2b")
+  target_compile_definitions(k2b_cedar_runtime PUBLIC ${common_definitions})
+  set_target_properties(k2b_cedar_runtime PROPERTIES
+    C_STANDARD 99 C_STANDARD_REQUIRED YES POSITION_INDEPENDENT_CODE YES)
+  target_compile_options(k2b_cedar_runtime PRIVATE -Wall -Wextra -Werror)
+  target_link_libraries(k2b_cedar_runtime PUBLIC Threads::Threads ${CMAKE_DL_LIBS})
+  add_dependencies(k2b_cedar_runtime k2b_cedar_abi_check)
+
+  # Build only: this target is never registered as an automatic test.
+  add_executable(k2b_runtime_load_check
+    "${_K2B_CEDAR_PROJECT_ROOT}/tests/k2b/runtime_load_check.c")
+  set_target_properties(k2b_runtime_load_check PROPERTIES
+    C_STANDARD 99 C_STANDARD_REQUIRED YES RUNTIME_OUTPUT_DIRECTORY "${runtime}")
+  target_compile_options(k2b_runtime_load_check PRIVATE -Wall -Wextra -Werror)
+  target_link_libraries(k2b_runtime_load_check PRIVATE k2b_cedar_runtime)
+
   foreach(lib cdc_base MemAdapter sbm fbm vdecoder)
     target_include_directories(k2b_${lib} PRIVATE ${common_includes})
     target_compile_definitions(k2b_${lib} PRIVATE ${common_definitions})

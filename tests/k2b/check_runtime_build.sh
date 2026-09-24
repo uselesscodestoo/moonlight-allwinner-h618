@@ -85,6 +85,17 @@ for file in "$compat" "$preload_test"; do
             esac
         done
 done
+load_check="$runtime/k2b_runtime_load_check"
+[ -f "$load_check" ] || fail 'missing runtime load-check ELF'
+"$readelf" -h "$load_check" | grep -Eq 'Class: +ELF64' || fail 'load check is not ELF64'
+"$readelf" -h "$load_check" | grep -Eq 'Machine: +AArch64' || fail 'load check is not ARM64'
+"$readelf" -d "$load_check" | awk '/\(NEEDED\)/ { print $NF }' |
+    while read -r needed; do
+        case "$needed" in
+            '[libc.so.6]'|'[libdl.so.2]'|'[libpthread.so.0]'|'[ld-linux-aarch64.so.1]') ;;
+            *) fail "load check has unexpected dependency: $needed" ;;
+        esac
+    done
 for lib in cdc_base MemAdapter sbm fbm vdecoder VE videoengine awh264 vdecVcs; do
     if "$readelf" -d "$runtime/lib$lib.so" | grep -F '(NEEDED)' |
         grep -Fq '[libk2b_cedar54_compat.so]'; then
@@ -138,4 +149,4 @@ fi
 grep -Fq 'K2B vendor cedar_ve.h is missing' "$negative/cached-header.log" || fail 'cached header diagnostic'
 configure "$build/positive"
 cmake --build "$build/positive" --parallel 4
-echo 'PASS: nine private ARM64 libraries, independent compat preload, strict complete link, ELF checks, and input rejection checks (no target execution)'
+echo 'PASS: nine private ARM64 libraries, independent compat preload and runtime loader, strict complete link, ELF checks, and input rejection checks (no target execution)'
