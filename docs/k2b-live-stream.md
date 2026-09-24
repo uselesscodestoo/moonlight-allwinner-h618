@@ -284,13 +284,61 @@ Current board binary SHA256:
 `de166f63c065984b36e1e3628e58faeaaaf58c6775ab2bafc261e18ef8587a04`.
 It includes predecode plus the retirement fix. Both older baseline and failed
 candidate binaries remain archived; current source builds the fixed candidate.
-New-version long-duration validation, quantitative presentation/latency evidence
-and audible audio remain outstanding. Previous user feedback established the
+At that checkpoint, new-version long-duration validation, quantitative
+presentation/latency evidence and audible audio remained outstanding. The audio
+result below supersedes the audible-audio gap. Previous user feedback established the
 predecode latency benefit, not a separate optical measurement of this fix.
 
 Evidence prefix: `F:/temp/projects/k2b-predecode-retirefix-`, including
 `short-20260924.log`, `recovery-20260924.log`, `kernel-20260924.log`,
 `full-kernel-20260924.log`, and `recovery-full-kernel-20260924.log`.
+
+### Headphone streaming audio confirmed (19:05)
+
+The user first confirmed hearing the board's local `Front_Center.wav`, without
+streaming. A subsequent real Sunshine session played the same WAV from the PC
+three times through `System.Media.SoundPlayer`, then through Moonlight's existing
+ALSA backend and the desktop user's Pulse sink `AudioCodec-Playback` (`hw:0,0`).
+The user confirmed normal headphone speech AND Windows volume-change sounds.
+This is an audible streaming-audio pass, not merely successful PCM writes.
+
+An ALSA file/slave-pulse diagnostic captured 492960 stereo frames (10.27 s),
+mean -22.6 dBFS and peak -4.7 dBFS. The local source has mean -22.6 dBFS and
+peak -6.5 dBFS; this capture also includes Windows sounds, so it is not a
+sample-perfect comparison. Twelve ALSA recoveries were logged across intermittent
+host audio, but the user reported normal sound. Continuous-audio soak remains
+separate. The previous ffplay sine test was extremely quiet (-56.2 dBFS peak);
+that different source/player must not be used to infer a generally silent or
+attenuating Moonlight decoder. No gain boost or decoder change was made.
+
+The launcher now defaults to ALSA `pulse` and discovers the invoking sudo user's
+Pulse socket/cookie paths. Explicit Pulse environment settings are preserved;
+cookie contents are never printed. This uses the ALSA Pulse plugin, so the
+build can keep `ENABLE_PULSE=OFF`. No system mixer/Pulse/Sunshine settings were
+changed. `-audio hw:1,0` still selects HDMI and `-audio null` discards playback.
+HDMI audio is not claimed as an audible pass. If no desktop Pulse session exists,
+start it normally or explicitly choose a direct ALSA device; the script does not
+start a sound server or silently fall back to another output.
+
+`sudo sh tests/k2b/check_stream_launcher.sh` checks default/override arguments
+and automatic Pulse environment on this board without starting hardware. It
+failed against the previous launcher and passed after the change. Actual `sh`
+launching is separately tested on the board; the argument test uses Bash only to
+intercept `exec`. Evidence: `F:/temp/projects/k2b-audio-speech-20260924.log` and
+`k2b-audio-isolation-20260924.md`, plus the two earlier capture logs/configs.
+
+A subsequent 70-second launch used only
+`sudo sh tools/k2b-stream.sh 192.168.137.1`, without manually supplied Pulse
+variables or diagnostic audio capture. Pulse reported the root Moonlight client
+on sink 1, stereo 48 kHz, unmuted at 100%, sampled sink latency 20 ms. The user
+confirmed **audio, picture and mouse all normal; interaction latency acceptable**.
+Worker elapsed 68.245 s, received 3888 / decoded 3887 / display submissions 3887,
+video recoveries 0, queue peak 1. Source cadence varied on the desktop, so this
+is not an exact sustained-60/presentation measurement. Audio wrote 399120 frames
+with 16 recoveries during intermittent sounds; uninterrupted audio remains to be
+tested. Normal cleanup completed, no process remained, CMA free was 117100 KiB,
+and full current-boot kernel error checks found no DE invalid-address/L2 Page/
+Oops/BUG matches. Evidence: `k2b-audio-default-launcher-20260924.log`.
 
 ## Build / run on this board
 
@@ -304,13 +352,16 @@ cmake -S . -B build/k2b-integrated \
 cmake --build build/k2b-integrated -j4
 # After reboot, if this node does not exist:
 test -c /dev/cedar_test_heap || sudo insmod ~/projects/cedarx_test/module/cedar_test_heap.ko
-# Current directly connected PC; discard playback while audio is unresolved:
-sudo sh tools/k2b-stream.sh 192.168.137.1 -audio null
+# Current directly connected PC; default is the tested board headphone route:
+sudo sh tools/k2b-stream.sh 192.168.137.1
+# Optional: HDMI audio (not yet audibly verified), or discard audio playback:
+# sudo sh tools/k2b-stream.sh 192.168.137.1 -audio hw:1,0
+# sudo sh tools/k2b-stream.sh 192.168.137.1 -audio null
 ```
 
 Use only the matching 5.4.125 exporter module. No system library installation or
 kernel replacement was made. The wrapper uses the private runtime and existing
-pairing directory, HDMI ALSA `hw:1,0`, and bundled controller mappings. Additional
+pairing directory, headphone ALSA `pulse`, and bundled controller mappings. Additional
 Moonlight options may follow the host argument, e.g. `-viewonly`.
 Pairing a different host must be done separately using the same key directory.
 

@@ -16,10 +16,20 @@ if [ ! -c /dev/cedar_test_heap ]; then
     echo "Load the matching cedar_test_heap.ko first (see docs/k2b-live-stream.md)." >&2
     exit 1
 fi
+# The tested headphone route is the desktop user's Pulse ALSA device. sudo
+# otherwise hides that user's server/cookie. Keep explicitly supplied settings.
+if [ -z "${PULSE_SERVER:-}" ] && [ -n "${SUDO_UID:-}" ] &&
+   [ -S "/run/user/$SUDO_UID/pulse/native" ]; then
+    pulse_home=$(getent passwd "$SUDO_UID" | cut -d: -f6)
+    export PULSE_SERVER="unix:/run/user/$SUDO_UID/pulse/native"
+    if [ -z "${PULSE_COOKIE:-}" ] && [ -n "$pulse_home" ]; then
+        export PULSE_COOKIE="$pulse_home/.config/pulse/cookie"
+    fi
+fi
 exec "$root/tools/k2b-runtime/run-private.sh" \
     "$root/build/k2b-integrated/tools/k2b-runtime/runtime" \
     "$root/build/k2b-integrated/moonlight" stream \
     -platform k2b -app Desktop -1080 -fps 60 -codec h264 -bitrate 15000 \
-    -audio hw:1,0 \
+    -audio pulse \
     -mapping "$root/third_party/SDL_GameControllerDB/gamecontrollerdb.txt" \
     -keydir "$root/build/k2b-pairing" "$@" "$host"
