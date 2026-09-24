@@ -15,7 +15,7 @@ enum { SCREEN = 0, NEW_CLIENT = 1, DESTROY_CLIENT = 2,
        ACQUIRE_FENCE = 3, SUBMIT_FENCE = 4 };
 struct hwc_sync { int fd; unsigned int count; };
 struct k2b_disp {
-  int fd, client, active, last_fence;
+  int fd, client, active, last_fence, previous_fence;
   unsigned int sequence;
 };
 
@@ -106,6 +106,7 @@ int k2b_disp_open(struct k2b_disp **out)
   d = calloc(1, sizeof(*d));
   if (!d) return -1;
   d->last_fence = -1;
+  d->previous_fence = -1;
   d->fd = open("/dev/disp", O_RDWR | O_CLOEXEC);
   if (d->fd < 0) goto failed;
   args[0] = SCREEN; args[1] = (unsigned long)(uintptr_t)&output;
@@ -153,7 +154,8 @@ int k2b_disp_present(struct k2b_disp *d, const struct k2b_frame *frame,
   if (commit(d, &config, release_fd) < 0) return -1;
   int retained = fcntl(*release_fd, F_DUPFD_CLOEXEC, 0);
   if (retained < 0) return -1;
-  if (d->last_fence >= 0) close(d->last_fence);
+  if (d->previous_fence >= 0) close(d->previous_fence);
+  d->previous_fence = d->last_fence;
   d->last_fence = retained;
   return 0;
 }
@@ -163,6 +165,14 @@ int k2b_disp_retire(struct k2b_disp *d)
   struct disp_layer_config2 blank = {.channel = 0, .layer_id = 0};
   int previous = -1, next = -1;
   if (!d) { errno = EINVAL; return -1; }
+  /* SET_CONFIG2 may reap imports before applying its new layer configuration.
+   * Do not issue the first blank while the last picture flip is still queued:
+   * the preceding picture's release fence must advance first. */
+  if (d->previous_fence >= 0) {
+    if (wait_fence(d->previous_fence) < 0) return -1;
+    close(d->previous_fence);
+    d->previous_fence = -1;
+  }
   previous = d->last_fence;
   d->last_fence = -1;
   /* A vendor fence signals only after a later sequence. Three blank commits

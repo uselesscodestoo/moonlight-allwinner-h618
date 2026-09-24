@@ -215,6 +215,83 @@ this does not satisfy every final acceptance requirement. Evidence is in
 `k2b-wired-soak-summary-20260924.json`, `k2b-wired-soak-kernel-20260924.log`
 and the matching start/mid/five-minute/seven-minute/nine-minute/exit-state logs.
 
+### Predecode experiment: lower latency, unsafe exit (18:35–18:39)
+
+An uncommitted candidate allows one decoded pending picture while two pictures
+are held by display. It retains the existing fence gate on display submission;
+stop/reset return the pending picture separately. A test running the real worker
+with fake hardware boundaries failed on the baseline (`decodes == 1`, actual 0)
+and passed after the change, including bounded preparation, no early display
+commit, and return of the pending picture on stop. Frame/AU/queue/picture tests,
+native build and the native scheduling test passed. These tests do NOT model
+the vendor's physical RCQ/scanout retirement.
+
+A 40-second stream decoded 2249 / submitted 2248 pictures. A following 90-second
+test injected the existing AU-120 drop, recovered once and decoded 5260 /
+submitted 5258 pictures; its measured decode window was 83.214 s at 59.990 fps.
+The user explicitly confirmed normal functionality and noticeably lower latency.
+
+**Both exits produced DE invalid-address / IOMMU faults. This candidate is NOT
+accepted for normal use.** The first exit logged six invalid-address events near
+kernel uptime 53992.87–53992.96; the second logged three near 54114.41–54114.45.
+The first failure was discovered in the full kernel follower only after the
+second test was already running; earlier short `dmesg | tail` checks missed it.
+Future runs must inspect the entire exit interval before restarting. Both test
+processes have exited; do not run more hardware tests until board recovery.
+
+At this checkpoint candidate source remained in the working tree for the
+retirement fix. The normal board binary was restored from
+`moonlight-baseline-6720795` (SHA256
+4fc8586b15cac5b68e733321571ebbd47abeee567a9084f07d91620a98cbeb51).
+The failed candidate binary is preserved as `moonlight-predecode-20260924-1835`
+beside it. Do not run that archived failed binary. The subsequent retirement
+fix and current binary are described below. Evidence:
+`k2b-predecode-short-20260924.log`, `k2b-predecode-recovery-20260924.log`, and
+`k2b-predecode-kernel-20260924.log` in `F:/temp/projects/`.
+
+### Predecode retirement fix after reboot (18:45–18:49)
+
+The user explicitly authorized reboot. The boot ID changed to
+`d031618f-d45e-49a3-b677-d3cd21721271`; wired/WLAN addresses were unchanged,
+CMA remained 128 MiB and the matching exporter module was reloaded.
+
+Vendor `disp_mgr_set_layer_config2()` can unmap older imports before applying
+its new layer configuration. The presenter now retains a duplicate of the
+preceding picture's fence and waits for it BEFORE the first blank commit on
+retirement. This establishes the last flip's timeline progress before starting
+the existing three-blank drain; it does not change normal display submission
+limits or release pictures early. Timeout returns an error without issuing the
+blank. This remains a practical vendor timeline sequence, not an independent
+proof of physical RCQ completion in all circumstances.
+
+The real-presenter ordering test failed before the change and passed after it,
+including the timeout/no-blank case. Native build, native retirement test,
+predecode scheduling test and 396 display-config checks passed. The fix is a
+source-backed timing hypothesis with the following hardware regression evidence:
+
+- 25-second launch, worker elapsed 24.190 s: decoded/submitted 1410 pictures;
+  measured window 1151 / 19.190 s = 59.979 fps. No network-drop reports.
+- 65-second launch with the AU-120 diagnostic rejection: recovered once,
+  worker elapsed 63.146 s, decoded 3679 / display-submitted 3677; measured
+  window 3416 / 58.146 s = 58.749 fps. Received rates also varied below 60 in
+  this run, so it is a recovery/cleanup pass, NOT an exact 60 fps pass.
+- Full post-exit kernel logs were checked before any subsequent launch.
+  Neither exit nor the injected in-session reset produced DE invalid-address,
+  IOMMU or Oops reports. No moonlight process remained; final CMA free was
+  117528 KiB. The pre-fix repeated exit faults were not reproduced in these runs.
+
+Current board binary SHA256:
+`de166f63c065984b36e1e3628e58faeaaaf58c6775ab2bafc261e18ef8587a04`.
+It includes predecode plus the retirement fix. Both older baseline and failed
+candidate binaries remain archived; current source builds the fixed candidate.
+New-version long-duration validation, quantitative presentation/latency evidence
+and audible audio remain outstanding. Previous user feedback established the
+predecode latency benefit, not a separate optical measurement of this fix.
+
+Evidence prefix: `F:/temp/projects/k2b-predecode-retirefix-`, including
+`short-20260924.log`, `recovery-20260924.log`, `kernel-20260924.log`,
+`full-kernel-20260924.log`, and `recovery-full-kernel-20260924.log`.
+
 ## Build / run on this board
 
 ```sh

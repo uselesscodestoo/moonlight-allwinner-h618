@@ -53,6 +53,16 @@ $(QUEUE_TEST_BINARY): tests/k2b/test_input_queue.c src/video/k2b/input_queue.c s
 test-disp: $(DISP_TEST_BINARY)
 	./$(DISP_TEST_BINARY)
 
+RETIRE_TEST_BINARY := $(BUILD_DIR)/test_disp_retire$(EXEEXT)
+.PHONY: test-disp-retire
+test-disp-retire: $(RETIRE_TEST_BINARY)
+	./$(RETIRE_TEST_BINARY)
+	./$(RETIRE_TEST_BINARY) timeout
+
+$(RETIRE_TEST_BINARY): tests/k2b/test_disp_retire.c src/video/k2b/disp_presenter.c src/video/k2b/disp_presenter.h $(VENDOR_HEADER_DEP) | check-vendor-headers
+	mkdir -p $(BUILD_DIR)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -Isrc/video/k2b -idirafter "$(K2B_VENDOR_HEADERS)" tests/k2b/test_disp_retire.c $(LDFLAGS) $(LDLIBS) -o $@
+
 # An order-only phony prerequisite validates the path even for a cached binary.
 check-vendor-headers:
 	@test -n "$(K2B_VENDOR_HEADERS)" || { echo "ERROR: test-disp requires K2B_VENDOR_HEADERS=<vendor kernel include directory>" >&2; exit 1; }
@@ -103,6 +113,15 @@ $(RUNTIME_TEST_BINARY): tests/k2b/test_cedar_runtime.c src/video/k2b/cedar_runti
 	$(CC) $(CPPFLAGS) $(CFLAGS) -DTINA_LINUX_SUPPORT=0 -pthread -Isrc/video/k2b $(RUNTIME_INCLUDES) tests/k2b/test_cedar_runtime.c src/video/k2b/cedar_runtime.c $(RUNTIME_WRAPS) $(LDFLAGS) $(LDLIBS) -ldl -o $@
 
 PICTURE_TEST_BINARY := $(BUILD_DIR)/test_cedar_picture$(EXEEXT)
+VIDEO_PREDECODE_TEST_BINARY := $(BUILD_DIR)/test_video_predecode$(EXEEXT)
+
+.PHONY: test-video-predecode
+test-video-predecode: $(VIDEO_PREDECODE_TEST_BINARY)
+	./$(VIDEO_PREDECODE_TEST_BINARY)
+
+$(VIDEO_PREDECODE_TEST_BINARY): tests/k2b/test_video_predecode.c src/video/k2b/video.c src/video/k2b/input_queue.c src/video/k2b/access_unit.c src/video/k2b/cedar_picture.c src/video/k2b/frame.c $(RUNTIME_HEADER_DEPS) | check-runtime-headers
+	mkdir -p $(BUILD_DIR)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -DTINA_LINUX_SUPPORT=0 -pthread -Isrc/video/k2b -Ithird_party/moonlight-common-c/src $(RUNTIME_INCLUDES) tests/k2b/test_video_predecode.c src/video/k2b/input_queue.c src/video/k2b/access_unit.c src/video/k2b/cedar_picture.c src/video/k2b/frame.c $(LDFLAGS) $(LDLIBS) -o $@
 
 .PHONY: test-picture
 test-picture: $(PICTURE_TEST_BINARY)

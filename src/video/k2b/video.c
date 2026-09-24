@@ -43,6 +43,7 @@ struct k2b_video {
   struct k2b_disp *disp;
   struct held_picture held[K2B_HELD_MAX];
   unsigned held_count;
+  VideoPicture *pending_picture; /* Decoded, never imported by DE yet. */
   uint64_t received, submitted, decoded, displayed, released;
   uint64_t started_ms;
   double decode_ms;
@@ -229,6 +230,26 @@ static int present_picture(struct k2b_video *video, VideoPicture *picture)
   return 0;
 }
 
+static int present_pending_picture(struct k2b_video *video)
+{
+  if (!video->pending_picture || video->held_count >= 2)
+    return 0;
+  VideoPicture *picture = video->pending_picture;
+  video->pending_picture = NULL;
+  /* present_picture takes ownership even if import/commit subsequently fails. */
+  return present_picture(video, picture);
+}
+
+static int return_pending_picture(struct k2b_video *video)
+{
+  if (!video->pending_picture)
+    return 0;
+  if (video->api->return_picture(video->decoder, video->pending_picture) < 0)
+    return -1;
+  video->pending_picture = NULL;
+  return memory_healthy(video, "ReturnPicture pending") ? 0 : -1;
+}
+
 static int initialize_worker(struct k2b_video *video)
 {
   video->diagnostic_static = getenv("K2B_DIAGNOSTIC_STATIC") != NULL;
@@ -267,6 +288,10 @@ static void finish_worker(struct k2b_video *video)
     fprintf(stderr, "K2B: display retirement failed; retaining decoder and buffers. Board recovery required.\n");
     return;
   }
+  if (return_pending_picture(video) < 0) {
+    fprintf(stderr, "K2B: pending picture release failed; board recovery required.\n");
+    return;
+  }
   while (video->held_count)
     if (release_old_picture(video, 0) < 0) {
       fprintf(stderr, "K2B: picture release failed; retaining decoder. Board recovery required.\n");
@@ -298,13 +323,14 @@ static void print_stats(struct k2b_video *video)
   uint64_t received = video->received;
   pthread_mutex_unlock(&video->mutex);
   if (k2b_input_queue_stats(video->queue, &queue) == K2B_QUEUE_OK)
-    fprintf(stderr, "K2B: received=%llu enqueued=%llu submitted=%llu decoded=%llu display_submitted=%llu released=%llu held=%u queued=%zu decode_ms=%.1f elapsed_ms=%llu recoveries=%u discarded=%llu queue_peak=%zu\n",
+    fprintf(stderr, "K2B: received=%llu enqueued=%llu submitted=%llu decoded=%llu display_submitted=%llu released=%llu held=%u queued=%zu decode_ms=%.1f elapsed_ms=%llu recoveries=%u discarded=%llu queue_peak=%zu pending=%u\n",
         (unsigned long long)received, (unsigned long long)queue.accepted,
         (unsigned long long)video->submitted, (unsigned long long)video->decoded,
         (unsigned long long)video->displayed, (unsigned long long)video->released,
         video->held_count, queue.queued, video->decode_ms,
         (unsigned long long)(monotonic_ms() - video->started_ms),
-        video->recoveries, (unsigned long long)queue.discarded, queue.high_watermark);
+        video->recoveries, (unsigned long long)queue.discarded, queue.high_watermark,
+        video->pending_picture != NULL);
 }
 
 static void *video_worker(void *opaque)
@@ -340,6 +366,9 @@ static void *video_worker(void *opaque)
       if (k2b_disp_retire(video->disp) < 0) {
         fail_worker(video, "recovery display drain"); break;
       }
+      if (return_pending_picture(video) < 0) {
+        fail_worker(video, "recovery pending picture release"); break;
+      }
       while (video->held_count)
         if (release_old_picture(video, 0) < 0) {
           fail_worker(video, "recovery picture release"); break;
@@ -358,9 +387,12 @@ static void *video_worker(void *opaque)
       continue;
     }
     if (release_signaled(video) < 0) { fail_worker(video, "release fence/picture"); break; }
-    /* Avoid a burst of SET_CONFIG2 calls before the prior flip is observed.
-     * The vendor importer reaps old mappings on the next SET_CONFIG2. */
-    if (video->held_count >= 2) { idle_tick(); continue; }
+    /* Keep the two-import display limit, but prepare one next picture while
+     * waiting for retirement. Decode must not start only after the flip. */
+    if (present_pending_picture(video) < 0) {
+      fail_worker(video, "pending picture presentation"); break;
+    }
+    if (video->pending_picture) goto wait_or_report;
     if (!leased) {
       int result = k2b_input_queue_take(video->queue, &input, 0);
       if (result == K2B_QUEUE_OK) leased = 1;
@@ -387,21 +419,21 @@ static void *video_worker(void *opaque)
         !memory_healthy(video, "DecodeVideoStream")) {
       fail_worker(video, "DecodeVideoStream"); break;
     }
-    while (video->held_count < 2 && video->submitted) {
+    if (video->submitted) {
       VideoPicture *picture = video->api->request_picture(video->decoder, 0);
       if (!memory_healthy(video, "RequestPicture")) {
         fail_worker(video, "RequestPicture"); break;
       }
-      if (!picture) break;
-      video->decoded++;
-      if (present_picture(video, picture) < 0) {
-        fail_worker(video, "picture presentation"); break;
-      }
-      progress = 1;
-      if (release_signaled(video) < 0) {
-        fail_worker(video, "release fence/picture"); break;
+      if (picture) {
+        video->decoded++;
+        video->pending_picture = picture;
+        progress = 1;
+        if (present_pending_picture(video) < 0) {
+          fail_worker(video, "picture presentation"); break;
+        }
       }
     }
+wait_or_report:
     if (requested_stop(video)) break;
     if (monotonic_ms() >= next_stats) {
       print_stats(video);
