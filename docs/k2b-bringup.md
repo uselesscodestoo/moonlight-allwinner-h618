@@ -360,3 +360,43 @@ VPU/HDMI。详细命令、日志、审查结果和路径限制见
 不能从公开 `DestroyVideoDecoder` 没有直接调用 SBM 析构就推断泄漏。
 初始化失败回滚、内部线程退出和显示持有仍不能据此视为安全。
 完整证据和生产实现约束见 [解码生命周期调查](k2b-decoder-lifecycle-audit.md)。
+
+## Cedar 画面布局转换已实现并通过原生测试
+
+`e2737c9` / `f498bf7` 新增 `cedar_picture.h/.c`，将保留中的真实
+`VideoPicture` 与内存适配器的两个分配视图转换成已有 `k2b_frame`。
+核对同一分配、fd、Y/UV 偏移、步长、存储高度、裁剪、格式及容量；
+拒绝隔行、错误画面、10-bit、AFBC 或其他非线性/非 NV12 布局。
+使用协商的矩阵/范围和适配器 fd，不把 VE IOVA 当作显示地址。
+不读取、复制像素或改变所有权，也不允许据此提前 `ReturnPicture`。
+
+测试先用空实现获得预期失败，再完成转换。本地最终普通、NDEBUG、
+ASan+UBSan 各 319 项检查通过；原有 frame 59、AU 272、queue 和
+runtime 242 场景回归通过。缓存测试程序存在时，缺失真实头文件仍被
+拒绝。规格及质量审查均通过；审查发现的裁剪右界独立测试已补齐，
+仅在构建目录副本删除相应保护条件便使该测试的三项检查失败。
+
+源码包 `k2b-picture-f498bf7.bundle` 从 `89c5fbf` 快进到 `f498bf7`，
+传输前后核对 SHA256：
+`e6e6727c6033e22cbcbfb6d8b41b698be9deaceaa10a9d636d2e147cda0308d7`。
+未上传任何主机交叉编译库；板端原生普通/NDEBUG 各通过 319 项检查，
+私有运行库重建成功。纯加载检查程序的 DT_NEEDED 仍只有 libc 与动态加载器。
+
+板端重现命令（在 `/home/kickpi/projects/moonlight-embedded` 执行）：
+
+```sh
+cedar_root="$PWD/build/k2b-runtime-native/managed-source/libcedarc_v2.0-243f2cbe84a817344d2502f4dd3d66b81338282f-243f2cbe84a817344d2502f4dd3d66b81338282f"
+make -f tests/k2b/Makefile test-picture BUILD_DIR=build/k2b-picture-native K2B_CEDARC_ROOT="$cedar_root"
+make -f tests/k2b/Makefile test-picture BUILD_DIR=build/k2b-picture-native-ndebug K2B_CEDARC_ROOT="$cedar_root" 'CFLAGS=-std=c99 -O2 -DNDEBUG -Wall -Wextra -Werror'
+cmake --build build/k2b-runtime-native --parallel 2
+```
+
+主机保留完整输出 `build/k2b-cross/picture-native-20260924.log`，SHA256：
+`6f8eb21b73ec3857063d77943d2e6f6d92c92cbd6dcc81cfca84b353362f492c`。
+测试后启动 ID 未变、堆节点仍不存在、板端工作树干净；没有 VPU 初始化、
+HDMI 切换或系统配置修改。原 `h618-egl-download` 工作树仍干净且为 `4e870a2`。
+
+这些是元数据转换与构建测试，不是硬件输出画面通过。转换器已进入
+私有静态运行库，但生产解码器/所有者线程尚未调用它；下一阶段必须实现
+有界送流、真实图片持有/归还和可靠清理，再验证固定样本的实际 NV12 输出。
+动态 disp 退役与真实 Sunshine 1920×1080、60 distinct fps 验收仍未完成。

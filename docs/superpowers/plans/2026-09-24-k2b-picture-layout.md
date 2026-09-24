@@ -14,7 +14,7 @@ This is one dependency of the approved full backend design, not replacement acce
 
 **Files:** Create `src/video/k2b/cedar_picture.h`, `src/video/k2b/cedar_picture.c`, `tests/k2b/test_cedar_picture.c`; modify `tests/k2b/Makefile` and `cmake/K2BCedarRuntime.cmake`.
 
-- [ ] Write the public contract and failing tests using real headers, no replacement Cedar structs:
+- [x] Write the public contract and failing tests using real headers, no replacement Cedar structs:
 
 ```c
 int k2b_cedar_picture_frame(const VideoPicture *picture,
@@ -44,8 +44,8 @@ CHECK(errno == EINVAL && memcmp(&out, &before, sizeof(out)) == 0);
 
 Tests must remain live with NDEBUG (`CHECK`, not assert). Cover every guard independently: each null argument; NV21/other format; stream other than zero; non-progressive; each frame/field-error flag; 10-bit/AFBC; third/fourth plane; negative/zero/over-limit storage width/height/stride; width greater than stride; negative/inverted/out-of-storage crops; wrong visible dimensions; odd crop/stride/height; both color matrices/ranges and invalid enums; null/different allocation base, different fd/size/VE base; negative fd including accepting fd 0; nonzero Y offset; out-of-allocation UV; wrong UV offset and pointer; truncated allocation; `nBufSize` too small/negative/larger than allocation; address range overflow. Exercise valid padded stride/cropped 1920x1080 in larger even storage, with matching offsets. Set picture color fields to unrelated values and verify negotiated values survive. No pixels may be accessed even for synthetic integer-address overflow fixtures.
 
-- [ ] Run RED: `make -f tests/k2b/Makefile test-picture K2B_CEDARC_ROOT=/mnt/f/temp/projects/cedarx_test/libcedarc-tina`; absence/stub must fail. Record output before implementation.
-- [ ] Implement the converter with a local result then publish only on success:
+- [x] Run RED: `make -f tests/k2b/Makefile test-picture K2B_CEDARC_ROOT=/mnt/f/temp/projects/cedarx_test/libcedarc-tina`; absence/stub must fail. Record output before implementation.
+- [x] Implement the converter with a local result then publish only on success:
 
 ```c
 /* Bounds before subtraction/multiplication; no pointer subtraction across objects. */
@@ -96,17 +96,23 @@ return -1;
 
 Header documents borrowing, external synchronization and no pixel access. Reuse `k2b_frame_validate` for NV12 offset/extent/evenness, rather than duplicate its rules. Avoid comparing or exporting VE IOVA as a display address. `nBufFd` is not used as allocation authority; use adapter view fd (test this explicitly).
 
-- [ ] Add `test-picture` following `test-runtime`'s real-header includes and order-only phony header checks, so a cached binary cannot hide missing headers. New test executable compiles `cedar_picture.c` and `frame.c`, no runtime library/device dependency. Add both sources to existing static `k2b_cedar_runtime` target so production native/cross build compiles the code. Do not link vendor blobs into the loader or alter OFF baseline.
-- [ ] GREEN: run ordinary, NDEBUG and ASan+UBSan tests with separate BUILD_DIR values; all return 0. Run `test`, `test-au`, `test-queue`, `test-runtime` regressions. Check missing-header rejection with a cached `test-picture` binary. Rebuild existing cross private runtime, not executing AArch64 code on x86.
-- [ ] Commit only these five files. Spec review first, then quality review; address findings before proceeding.
+- [x] Add `test-picture` following `test-runtime`'s real-header includes and order-only phony header checks, so a cached binary cannot hide missing headers. New test executable compiles `cedar_picture.c` and `frame.c`, no runtime library/device dependency. Add both sources to existing static `k2b_cedar_runtime` target so production native/cross build compiles the code. Do not link vendor blobs into the loader or alter OFF baseline.
+- [x] GREEN: run ordinary, NDEBUG and ASan+UBSan tests with separate BUILD_DIR values; all return 0. Run `test`, `test-au`, `test-queue`, `test-runtime` regressions. Check missing-header rejection with a cached `test-picture` binary. Rebuild existing cross private runtime, not executing AArch64 code on x86.
+- [x] Commit only these five files. Spec review first, then quality review; address findings before proceeding.
 
 ## Task 2: Board verification and evidence (parent)
 
 **Files:** Modify `docs/k2b-bringup.md`, this checklist; create `docs/k2b-decoder-lifecycle-audit.md` recording the fixed-binary SBM ownership evidence.
 
-- [ ] Record source/binary evidence: `VideoEngineSetSbm` stores SBM at offsets 496/504; `VideoEngineDestroy` at 0x2e7c..0x2e98 invokes each object's callback at +8, which matches `SbmInterface.destroy`. Do not claim this proves failed-initialization rollback or live device cleanup.
-- [ ] Verify both repositories clean and expected ancestry, transfer a git bundle over SSH to `kickpi@172.31.197.223`, hash-check and fast-forward only. Do not copy cross-compiled libraries or change network authentication.
-- [ ] On board run ordinary/NDEBUG `test-picture` with existing fixed managed source and rebuild native private runtime with `cmake --build build/k2b-runtime-native --parallel 2`. No VPU initialization or HDMI action in this metadata test. Save full output locally.
-- [ ] Record exact outcomes, source commits, current address and next unfinished decoder ownership/worker stage. Keep full-goal status active; this helper is not a hardware decode/display result.
+- [x] Record source/binary evidence: `VideoEngineSetSbm` stores SBM at offsets 496/504; `VideoEngineDestroy` at 0x2e7c..0x2e98 invokes each object's callback at +8, which matches `SbmInterface.destroy`. Do not claim this proves failed-initialization rollback or live device cleanup.
+- [x] Verify both repositories clean and expected ancestry, transfer a git bundle over SSH to `kickpi@172.31.197.223`, hash-check and fast-forward only. Do not copy cross-compiled libraries or change network authentication.
+- [x] On board run ordinary/NDEBUG `test-picture` with existing fixed managed source and rebuild native private runtime with `cmake --build build/k2b-runtime-native --parallel 2`. No VPU initialization or HDMI action in this metadata test. Save full output locally.
+- [x] Record exact outcomes, source commits, current address and next unfinished decoder ownership/worker stage. Keep full-goal status active; this helper is not a hardware decode/display result.
 
 Self-review: matches approved strict NV12 layout and negotiated color requirements; all new types exist in fixed headers. This plan deliberately covers only picture-layout conversion; runtime ownership and live display retirement are still separate required implementation stages, not claimed by unit-test success.
+
+Completion evidence: implementation `e2737c9`, isolated width-boundary test
+`f498bf7`; spec and quality reviews passed, including a mutation check proving
+the added test fails when only the relevant guard is removed. Board native
+ordinary/NDEBUG each passed 319 checks, private runtime rebuilt successfully.
+Commands, scope limits and log hash are recorded in `docs/k2b-bringup.md`.
