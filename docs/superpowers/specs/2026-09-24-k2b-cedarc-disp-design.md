@@ -145,9 +145,13 @@
 
 ## 当前工作基线与下一步
 
-工作树已创建，但没有适配代码。原生完整构建尚未进行：本地子模块未
-初始化，Windows Git 的 submodule 帮助脚本存在环境问题；板端缺少 Git、
-CMake、libevdev/libudev/Opus/cURL/Expat/Avahi/ALSA 开发包。
+工作树已创建，但没有适配代码。原生完整构建尚未进行。Git 子模块环境
+问题已通过 Git 自带 Bash 与进程内配套 PATH 解决，未修改系统 PATH；
+三个子模块已递归初始化并锁定为：moonlight-common-c
+`b126e481a195fdc7152d211def17190e3434bcce`、SDL_GameControllerDB
+`28a856f2b92da8891b161acd0abd64fbf4445d97`、enet
+`dea6fb5414b180908b58c0293c831105b5d124dd`。
+板端仍缺少 Git、CMake、libevdev/libudev/Opus/cURL/Expat/Avahi/ALSA 开发包。
 这些是构建前置缺项，不是已经通过的回归测试，也不是板卡性能结论。
 
 本文书面设计复核后，编写可执行的实现计划并依序推进。首次硬件动态
