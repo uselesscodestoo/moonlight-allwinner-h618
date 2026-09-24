@@ -46,6 +46,27 @@ function(k2b_add_cedar_runtime)
   endif()
   set(runtime "${CMAKE_CURRENT_BINARY_DIR}/runtime")
   file(MAKE_DIRECTORY "${runtime}")
+  # A separate, opt-in preload artifact. Never link it into the nine-library
+  # Cedar closure or Moonlight; a future explicit launcher controls activation.
+  add_library(k2b_cedar54_compat SHARED
+    "${_K2B_CEDAR_PROJECT_ROOT}/src/video/k2b/cedar54_compat.c"
+    "${_K2B_CEDAR_PROJECT_ROOT}/src/video/k2b/cedar54_ioctl_aarch64.S")
+  set_target_properties(k2b_cedar54_compat PROPERTIES
+    OUTPUT_NAME k2b_cedar54_compat
+    C_STANDARD 99 C_STANDARD_REQUIRED YES POSITION_INDEPENDENT_CODE YES
+    LIBRARY_OUTPUT_DIRECTORY "${runtime}" LINK_FLAGS "-Wl,-z,defs")
+  target_compile_options(k2b_cedar54_compat PRIVATE
+    "$<$<COMPILE_LANGUAGE:C>:-Wall>" "$<$<COMPILE_LANGUAGE:C>:-Wextra>"
+    "$<$<COMPILE_LANGUAGE:C>:-Werror>")
+
+  # Built but never registered for automatic execution, including cross builds.
+  add_executable(k2b_cedar54_preload_test
+    "${_K2B_CEDAR_PROJECT_ROOT}/tests/k2b/test_cedar54_preload.c")
+  set_target_properties(k2b_cedar54_preload_test PROPERTIES
+    C_STANDARD 99 C_STANDARD_REQUIRED YES RUNTIME_OUTPUT_DIRECTORY "${runtime}")
+  target_compile_options(k2b_cedar54_preload_test PRIVATE -Wall -Wextra -Werror)
+  target_link_libraries(k2b_cedar54_preload_test PRIVATE ${CMAKE_DL_LIBS})
+
   file(STRINGS "${_K2B_CEDAR_PROJECT_ROOT}/docs/k2b-cedarc-blobs.sha256" manifest)
   list(LENGTH manifest manifest_count)
   if(NOT manifest_count EQUAL 4)

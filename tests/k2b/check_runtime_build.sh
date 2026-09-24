@@ -57,12 +57,49 @@ assert_export libVE.so GetVeOpsS
 assert_export libvideoengine.so VideoEngineCreate
 assert_export libawh264.so CedarPluginVDInit
 assert_export libvdecVcs.so vcsCreate
+# The preload stays independent of every Cedar library, and does not enter the
+# original closure. These are static ELF checks; no produced file is executed.
+compat="$runtime/libk2b_cedar54_compat.so"
+[ -f "$compat" ] || fail 'missing compat preload'
+"$readelf" -h "$compat" | grep -Eq 'Class: +ELF64' || fail 'compat is not ELF64'
+"$readelf" -h "$compat" | grep -Eq 'Machine: +AArch64' || fail 'compat is not ARM64'
+"$readelf" -d "$compat" | grep -F '(SONAME)' | grep -Fq '[libk2b_cedar54_compat.so]' ||
+    fail 'compat SONAME'
+"$readelf" --dyn-syms --wide "$compat" |
+    awk '$4 == "FUNC" && $5 == "GLOBAL" && $6 == "DEFAULT" && $7 != "UND" && $8 == "ioctl" { found=1 } END { exit !found }' ||
+    fail 'compat does not export public ioctl'
+if "$readelf" --dyn-syms --wide "$compat" | grep -q 'k2b_cedar54_ioctl_dispatch'; then
+    fail 'compat helper is dynamically exported'
+fi
+"$readelf" -l --wide "$compat" | grep 'GNU_STACK' | grep -Eq ' RW +0x' ||
+    fail 'compat stack is not non-executable'
+preload_test="$runtime/k2b_cedar54_preload_test"
+[ -f "$preload_test" ] || fail 'missing preload ABI test'
+"$readelf" -h "$preload_test" | grep -Eq 'Machine: +AArch64' || fail 'preload test architecture'
+for file in "$compat" "$preload_test"; do
+    "$readelf" -d "$file" | awk '/\(NEEDED\)/ { print $NF }' |
+        while read -r needed; do
+            case "$needed" in
+                '[libc.so.6]'|'[libdl.so.2]'|'[ld-linux-aarch64.so.1]') ;;
+                *) fail "$file has unexpected dependency: $needed" ;;
+            esac
+        done
+done
+for lib in cdc_base MemAdapter sbm fbm vdecoder VE videoengine awh264 vdecVcs; do
+    if "$readelf" -d "$runtime/lib$lib.so" | grep -F '(NEEDED)' |
+        grep -Fq '[libk2b_cedar54_compat.so]'; then
+        fail "preload was linked into $lib"
+    fi
+done
 while read -r expected relative; do
     actual=$(sha256sum "$runtime/${relative##*/}")
     [ "${actual%% *}" = "$expected" ] || fail "blob hash: $relative"
 done < "$root/docs/k2b-cedarc-blobs.sha256"
 link_check="$runtime/k2b_runtime_link_check"
 [ -f "$link_check" ] || fail "missing complete link-check ELF"
+if "$readelf" -d "$link_check" | grep -F '(NEEDED)' | grep -Fq '[libk2b_cedar54_compat.so]'; then
+    fail 'preload was linked into the complete link check'
+fi
 "$readelf" -h "$link_check" | grep -Eq 'Machine: +AArch64' || fail "link check architecture"
 for lib in cdc_base MemAdapter sbm fbm vdecoder VE videoengine awh264 vdecVcs; do
     "$readelf" -d "$link_check" | grep -F '(NEEDED)' | grep -Fq "[lib$lib.so]" ||
@@ -101,4 +138,4 @@ fi
 grep -Fq 'K2B vendor cedar_ve.h is missing' "$negative/cached-header.log" || fail 'cached header diagnostic'
 configure "$build/positive"
 cmake --build "$build/positive" --parallel 4
-echo 'PASS: nine private ARM64 libraries, strict complete link, ELF checks, and input rejection checks (no target execution)'
+echo 'PASS: nine private ARM64 libraries, independent compat preload, strict complete link, ELF checks, and input rejection checks (no target execution)'
