@@ -340,6 +340,51 @@ tested. Normal cleanup completed, no process remained, CMA free was 117100 KiB,
 and full current-boot kernel error checks found no DE invalid-address/L2 Page/
 Oops/BUG matches. Evidence: `k2b-audio-default-launcher-20260924.log`.
 
+### Updated-version A/V and real-game soak (19:14–19:25)
+
+Current code/launcher checkpoint `9e42e99`, unchanged native binary SHA256
+`de166f63c065984b36e1e3628e58faeaaaf58c6775ab2bafc261e18ef8587a04`,
+completed a 625-second timed launch using the ordinary headphone-default command.
+The video worker ran 623.179 s. Initial load was a 1080p60-generated ffplay window
+plus a quiet looping test tone. During the run the user closed the test window
+and began playing a game; the owned tone process was then stopped as requested.
+The remainder is a real-game workload, not an uninterrupted synthetic test.
+
+The user confirmed everything normal both during play and after the full run:
+picture, game sound, board keyboard and mouse; no reported stalls, audio breaks
+or in-session signal loss. Keyboard receiver and G102 hotplug also appear in the
+kernel/stream logs. No test windows or tone processes were left behind.
+
+- Received 35957 AUs, decoded 35956 and display-submitted 35956 pictures.
+  Measured sample window: 35728 decoded / 618.174 s = **57.796 fps**.
+  Incoming cadence varied similarly, while decoded/submitted tracked received.
+  This is a ten-minute functional stability pass, NOT a claim of sustained
+  exact 60 fps or independently measured physical HDMI presentation.
+- Video recoveries 0, queued-AU discards 0, reported network-drop events 0.
+  Queue peak 4 (including startup), sampled running queue mostly 0–1;
+  no accumulating compressed-video backlog. Total decode-call time 191256 ms
+  (about 5.32 ms per decoded picture), not end-to-end latency.
+- ALSA wrote 26982000 stereo frames (562.125 s at 48 kHz) with **57 recoveries**
+  across synthetic audio, a source transition and game sound. These counts
+  must not be described as zero XRUNs or uninterrupted-source delivery.
+  User listening nevertheless confirmed normal game audio. Sampled Pulse
+  device + stream buffered latency was about 27–41 ms, not an optical A/V delay.
+- RSS samples 30060–30496 KiB, process CPU 21.7–24.9%, temperature samples
+  57.2–65.0 C. Running CMA free 78480–79084 KiB (about 76.6–77.2 MiB);
+  display-import cache 1–3, maximum 3. Display manager/composer error/skip
+  counters stayed 0; the outer HDMI skip counter stayed at its baseline 32.
+- Normal cleanup completed; no remaining Moonlight process. Boot ID unchanged.
+  CMA free was 114944 KiB immediately after exit, then 116948 KiB at the later
+  sample versus 117044 KiB before the run. Whole-boot kernel logging through
+  exit showed no DE invalid-address/L2 Page/Oops/BUG matches. HDMI power-off
+  after exit remains the known vendor behavior, not an in-session failure.
+
+Evidence in `F:/temp/projects/`: `k2b-av-soak-20260924.log`,
+`k2b-av-soak-summary-20260924.json`, `k2b-av-soak-kernel-20260924.log`,
+and `k2b-av-soak-{early-state,game-state,six-minute,eight-minute,nine-minute,exit-state}-20260924.log`.
+Production-path fixed-sample pixel comparison and controlled/independent actual
+presentation-rate verification remain separate unfinished acceptance items.
+
 ## Build / run on this board
 
 ```sh
