@@ -149,3 +149,15 @@ release fence，以及它未与 RCQ 事务/指定缓冲区绑定的限制。该�
 源码事实、时序风险推演和待上板验证项；尚未据此编写帧回收路径。
 需要先核实运行内核配置，再关联 fence、RCQ 完成、实际扫描地址与
 DMA-BUF 退役。未改变内核、桌面、自启动或原有后端。
+
+## 离线 Linux / AArch64 验证补充
+
+本机 WSL archlinux 提供原生 cc 及 `aarch64-linux-gnu-gcc 16.1.0`。
+在独立 `build/k2b-linux` 目录对 frame/disp 代码执行 ASan+UBSan，分别
+通过 59 / 396 项检查；没有连接开发板。相同源码也成功交叉编译、链接
+成 ARM aarch64 ELF，产物位于 `build/k2b-cross`，未执行这些目标程序。
+
+[CedarC 私有运行库接入记录](k2b-cedarc-runtime.md) 包含固定核心库哈希、
+ELF 依赖、真实头文件的 AArch64 结构 ABI 检查及剩余生产接入限制。
+ABI 正例编译通过；错误 TINA 宏或 x86_64 目标均被编译期拒绝。
+这不等价于 Moonlight 已加载新运行库，也不等价于板端通过新后端回归。
