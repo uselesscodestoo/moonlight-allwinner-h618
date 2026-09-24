@@ -53,6 +53,8 @@ AArch64 和 `TINA_LINUX_SUPPORT=0`，检查此前二进制核对确定的：
 - `sizeof(VideoStreamInfo) == 72`。
 - `offsetof(VConfig, veOpsS) == 152`。
 - `offsetof(VConfig, pVeOpsSelf) == 160`。
+- `sizeof(struct ScMemOpsS) == 192`，并逐一固定全部 24 个函数槽偏移。
+  只检查总大小不足以发现同样大小的回调换位。
 
 本机 WSL archlinux 已有 `aarch64-linux-gnu-gcc 16.1.0`，从仓库根执行：
 
@@ -75,6 +77,24 @@ file build/k2b-cross/check_cedar_abi
 结构尺寸检查不验证所有字段语义、核心库加载、驱动 ioctl、DMA 行为或
 实际解码。交叉编译也不自动证明板端 libc 可加载所有未来运行库。
 
+内存接口扩展的编译回归入口（仍只编译，不执行）：
+
+```sh
+sh tests/k2b/check_cedar_abi.sh \
+  /mnt/f/temp/projects/cedarx_test/libcedarc-tina build/k2b-cross/memory-abi
+```
+
+真实头文件通过；错误 TINA 宏被指定门禁拒绝；从真实字段类型构造、
+仅交换 open/open2 槽位的负例被内存槽偏移门禁拒绝。旧版只检查 VConfig
+的门禁实际会接受此换位负例，已用旧源码编译产物及 main 符号核对。
+负例 fixture 不用于运行库构建，也不复制完整厂商头文件。
+
+本次使用的 `include/sc_interface.h` SHA256：
+`dd701416488520a7ffa95eef904485af059ff45f31efdd8979ba0b127e707c53`；
+厂商 `drivers/media/cedar-ve/cedar_ve.h` SHA256：
+`42910bf9b511239b4589fd18616606e5b33c523eef4e607a97fd25e0fb2de24b`。
+这些是定位源快照的辅助信息，不替代整体归档、ABI 检查或板端运行验证。
+
 ## 生产接入前仍需处理
 
 探针 `cedar_mem.c` 的 checked/未知指针路径会 abort，close 会尝试释放
@@ -85,6 +105,11 @@ file build/k2b-cross/check_cedar_abi
 带分配大小/偏移的借用 fd 描述。网络输入要在回调返回前取得自有副本，
 再经有界队列送给受控的 CedarC 线程；不让 Moonlight 链节点悬空。
 已实现的 access_unit 模块只解决这一复制边界，不是完整队列或解码器。
+
+输入队列现已另行完成离线验证，记录见开发日志；尚未接入真实解码器。
+[内存会话审计](k2b-cedar-memory-lifecycle.md) 进一步明确了 void 回调的
+首错传播、显式会话、失败隔离和 CedarC 初始化非事务性回滚的限制。
+不能将用户态适配器自己的引用归零等同于全部厂商内核状态已经干净。
 
 显示持有/退役依然按 [disp 同步审计](k2b-disp-sync-audit.md) 的证据门槛
 推进；不能用结构 ABI 编译通过或码流复制单测替代实际 1080p60 验收。

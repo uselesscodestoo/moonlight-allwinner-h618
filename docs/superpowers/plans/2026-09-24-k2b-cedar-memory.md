@@ -154,6 +154,13 @@ make -B -f tests/k2b/Makefile test-memory CC=cc \
 
 ## 自检与范围
 
+主执行者另补现有 `tests/k2b/check_cedar_abi.c` 的 ScMemOpsS 布局检查和
+独立 `tests/k2b/check_cedar_abi.sh` 编译回归入口；不改实现者的 Makefile。
+新增 fixture 通过 include_next 导入原表，以其真实字段类型构造交换
+open/open2 的测试布局，不复制厂商头文件。先证明旧门禁会错误接受该变体，再固定 size=192 及 24 个
+函数槽偏移，确认真实 AArch64 头文件通过而变体被拒绝。这仅锁定配套
+函数表布局，不宣称预编译库行为由此获证。
+
 内存故障可诊断且不会 abort；未知 DMA 状态明确隔离，不假称回收成功。
 单实例会话仍需上层设备独占/内核干净状态检查，不声称库能检测所有外部
 进程或内核异常。未复用 probe 的强制残留释放。ScMemOps 的 pin 只保护
