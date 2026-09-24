@@ -12,6 +12,8 @@ AU_TEST_BINARY := $(BUILD_DIR)/test_access_unit$(EXEEXT)
 QUEUE_TEST_BINARY := $(BUILD_DIR)/test_input_queue$(EXEEXT)
 DISP_TEST_BINARY := $(BUILD_DIR)/test_disp_config$(EXEEXT)
 MEMORY_TEST_BINARY := $(BUILD_DIR)/test_cedar_memory$(EXEEXT)
+COMPAT_TEST_BINARY := $(BUILD_DIR)/test_cedar54_compat$(EXEEXT)
+COMPAT_WRAPS := $(foreach call,getenv uname stat fstat open read close syscall,-Wl,--wrap=$(call))
 CEDARC_HEADER := $(K2B_CEDARC_HEADERS)/sc_interface.h
 CEDAR_HEADER := $(K2B_VENDOR_CEDAR_HEADERS)/cedar_ve.h
 MEMORY_HEADER_DEPS = $(subst $(space),\$(space),$(wildcard $(subst $(space),\$(space),$(CEDARC_HEADER)))) $(subst $(space),\$(space),$(wildcard $(subst $(space),\$(space),$(CEDAR_HEADER))))
@@ -72,3 +74,11 @@ check-memory-headers:
 $(MEMORY_TEST_BINARY): tests/k2b/test_cedar_memory.c src/video/k2b/cedar_memory.c src/video/k2b/cedar_memory.h src/video/k2b/cedar_uapi.h $(MEMORY_HEADER_DEPS) | check-memory-headers
 	mkdir -p $(BUILD_DIR)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -pthread -Isrc/video/k2b -I"$(K2B_CEDARC_HEADERS)" -I"$(K2B_VENDOR_CEDAR_HEADERS)" tests/k2b/test_cedar_memory.c src/video/k2b/cedar_memory.c $(MEMORY_WRAPS) $(LDFLAGS) $(LDLIBS) -o $@
+
+.PHONY: test-compat
+test-compat: $(COMPAT_TEST_BINARY)
+	./$(COMPAT_TEST_BINARY)
+
+$(COMPAT_TEST_BINARY): tests/k2b/test_cedar54_compat.c src/video/k2b/cedar54_compat.c
+	mkdir -p $(BUILD_DIR)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -Isrc/video/k2b tests/k2b/test_cedar54_compat.c src/video/k2b/cedar54_compat.c $(COMPAT_WRAPS) $(LDFLAGS) $(LDLIBS) -o $@
