@@ -6,7 +6,7 @@
 没有上游 PR 或远程推送。板端仓库为 `/home/kickpi/projects/moonlight-embedded`，
 本地工作树为 `F:/temp/moonlight-embedded/.worktrees/k2b-cedarc-disp`。
 
-已完成构建准备、严格 NV12 布局契约和厂商 disp 配置转换，**尚未接入生产解码/显示后端，
+已完成构建准备、严格 NV12 布局契约、厂商 disp 配置转换及压缩输入复制/队列，**尚未接入生产解码/显示后端，
 也没有达到实际 1080p60 串流验收**。当前二进制仍是原有 SDL 后端构建基线，
 只编译、未运行串流，不能把它当作 K2B 的最终输出路径。
 
@@ -200,3 +200,60 @@ ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=halt_on_error=1 \
 `build/k2b-linux/offline-input-20260924.log`，SHA256：
 `9eda7d2b3356d7d67f1fb8d4f6906b0a2e1bf8638ec7a481773ad4c361846707`。
 它不包含板端运行证据；开发板最后同步位置仍是此前记录的 `acfd079`。
+
+## 离线有界输入队列
+
+实现提交 `c3485eb`；独立规格审查、随后质量审查均无待修复项。
+token 耗尽和资源初始化失败分支经源码检查，尚未做故障注入覆盖。
+
+`src/video/k2b/input_queue.{h,c}` 在创建时分配固定槽位，最多 8 槽、
+每槽最多 4 MiB。这个上限不是板端调优结果。push 不等待空位，也不在
+每帧分配内存；mutex 仍可能短暂等待，所以不能称为无锁或 wait-free。
+数据复制使用真实 access_unit 模块，不在回调返回后依赖 common-c 源链。
+
+单消费者借用的队头仍计入占用，归还前不能被覆盖。stop/discard 丢弃
+待处理输入，但保留正在借用的帧；stop 唤醒等待线程。销毁要求调用者
+先停止并 join/quiesce 其他调用，不是并发取消接口。队列没有实现 IDR
+恢复，也不代表 CedarC 图片或 DMA-BUF 已可回收。
+
+[输入生命周期审计](k2b-input-lifecycle.md) 记录了后续回调接入必须处理
+的 stop/cleanup 次序、异步 IDR 请求差异及部分初始化失败路径。该审计
+已独立对照固定 common-c 和 CedarC 源码复核。
+
+测试先以拒绝桩观察 create 成功路径失败，再完成实现。Linux 普通与
+NDEBUG、ASan+UBSan、ThreadSanitizer 均实际运行通过；含两种真实条件
+等待唤醒及 12,000 帧 SPSC 压力测试，压力期间并发读取统计。TSan 本次
+可以运行，不是仅编译成功；仍不等价于证明所有可能线程调度无误。
+AArch64 测试程序已交叉编译/链接为 ARM64 ELF，未执行、未同步上板。
+
+Linux 仓库根执行：
+
+```sh
+make -B -f tests/k2b/Makefile test-queue CC=cc BUILD_DIR=build/k2b-linux-parent
+make -B -f tests/k2b/Makefile test-queue CC=cc \
+  BUILD_DIR=build/k2b-linux-parent-ndebug CPPFLAGS=-DNDEBUG
+cc -std=c99 -O1 -g -Wall -Wextra -Werror -pthread \
+  -fsanitize=address,undefined -fno-omit-frame-pointer \
+  -Isrc/video/k2b -Ithird_party/moonlight-common-c/src \
+  tests/k2b/test_input_queue.c src/video/k2b/input_queue.c \
+  src/video/k2b/access_unit.c -o build/k2b-linux-parent/test_input_queue_sanitize
+ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=halt_on_error=1 \
+  ./build/k2b-linux-parent/test_input_queue_sanitize
+# TSan 单独编译运行，不与 ASan 同时启用。
+cc -std=c99 -O1 -g -Wall -Wextra -Werror -pthread \
+  -fsanitize=thread -fno-omit-frame-pointer \
+  -Isrc/video/k2b -Ithird_party/moonlight-common-c/src \
+  tests/k2b/test_input_queue.c src/video/k2b/input_queue.c \
+  src/video/k2b/access_unit.c -o build/k2b-linux-parent/test_input_queue_tsan
+TSAN_OPTIONS=halt_on_error=1 ./build/k2b-linux-parent/test_input_queue_tsan
+```
+
+本机日志在忽略的构建目录 `build/k2b-linux-parent/`：
+
+- `offline-queue-20260924.log`（普通/NDEBUG/ASan+UBSan/交叉编译），SHA256
+  `e5c09a3bef334b69bf046c6629ae99d0e818dede83ec081e4eebcdc7bf1f425e`。
+- `offline-queue-tsan-20260924.log`（TSan 运行），SHA256
+  `8591459b588d5e1b7742daa6fc43ea406cac0606157b9944f1a1002355f01caf`。
+
+同时重跑原有 frame/access_unit/disp 普通和 NDEBUG 测试，各为
+59/272/396 项通过。没有访问开发板、修改内核或启用新的平台选项。
