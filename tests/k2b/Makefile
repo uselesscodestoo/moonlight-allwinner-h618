@@ -82,3 +82,22 @@ test-compat: $(COMPAT_TEST_BINARY)
 $(COMPAT_TEST_BINARY): tests/k2b/test_cedar54_compat.c src/video/k2b/cedar54_compat.c
 	mkdir -p $(BUILD_DIR)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -Isrc/video/k2b tests/k2b/test_cedar54_compat.c src/video/k2b/cedar54_compat.c $(COMPAT_WRAPS) $(LDFLAGS) $(LDLIBS) -o $@
+
+RUNTIME_TEST_BINARY := $(BUILD_DIR)/test_cedar_runtime$(EXEEXT)
+RUNTIME_WRAPS := $(foreach call,getenv realpath stat lstat dlopen dlsym dlerror dladdr dlinfo dl_iterate_phdr dlclose,-Wl,--wrap=$(call))
+RUNTIME_HEADERS := include/vdecoder.h include/typedef.h include/sc_interface.h include/veInterface.h include/vbasetype.h include/cdc_config.h vdecoder/include/videoengine.h vdecoder/include/sbm.h vdecoder/include/sbmInterface.h vdecoder/include/fbm.h base/include/cdc_log.h base/include/CdcMessageQueue.h
+RUNTIME_INCLUDES = -I"$(K2B_CEDARC_ROOT)/include" -I"$(K2B_CEDARC_ROOT)/base/include" -I"$(K2B_CEDARC_ROOT)/vdecoder/include"
+RUNTIME_HEADER_DEPS = $(foreach header,$(RUNTIME_HEADERS),$(wildcard $(K2B_CEDARC_ROOT)/$(header)))
+
+.PHONY: test-runtime check-runtime-headers
+test-runtime: $(RUNTIME_TEST_BINARY)
+	./$(RUNTIME_TEST_BINARY)
+
+# Validate the external headers even when the executable is already cached.
+check-runtime-headers:
+	@test -n "$(K2B_CEDARC_ROOT)" || { echo "ERROR: test-runtime requires K2B_CEDARC_ROOT=<fixed CedarC source directory>" >&2; exit 1; }
+	@for header in $(RUNTIME_HEADERS); do test -f "$(K2B_CEDARC_ROOT)/$$header" || { echo "ERROR: required CedarC header missing: $$header" >&2; exit 1; }; done
+
+$(RUNTIME_TEST_BINARY): tests/k2b/test_cedar_runtime.c src/video/k2b/cedar_runtime.c src/video/k2b/cedar_runtime.h src/video/k2b/cedar_memory.h $(RUNTIME_HEADER_DEPS) | check-runtime-headers
+	mkdir -p $(BUILD_DIR)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -DTINA_LINUX_SUPPORT=0 -pthread -Isrc/video/k2b $(RUNTIME_INCLUDES) tests/k2b/test_cedar_runtime.c src/video/k2b/cedar_runtime.c $(RUNTIME_WRAPS) $(LDFLAGS) $(LDLIBS) -ldl -o $@
