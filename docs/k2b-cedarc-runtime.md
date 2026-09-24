@@ -318,3 +318,62 @@ make -B -f tests/k2b/Makefile test-runtime CC=cc \
 头文件，没有上传交叉编译库。启动 ID 未变，`/dev/cedar_test_heap` 仍不存在。
 本机保留 `build/k2b-cross/runtime-loader-native-unit-20260924.log`，SHA256：
 `7b8b42731dee86c544483794b1a1c0f8db87d6b4f76cba9a3de3a3b16f82e092`。
+
+## 真实私有加载与注册已验证
+
+`39cff35` 接入静态 loader、只构建不自动执行的 load-check、私有启动脚本和
+非 root 原生跟踪入口；`2557b17` 补齐动态链接器特殊路径拒绝。两个入口拒绝
+运行库目录中的空白、冒号、分号和美元符号，避免路径列表拆分或动态 token
+展开；依据见 [ld.so 手册](https://man7.org/linux/man-pages/man8/ld.so.8.html)。
+实际 shell 入口的 8 个路径负例已观察旧规则失败、新规则通过，未伪造架构。
+
+板端以校验后的源码 bundle 快进到 `2557b17`，使用 GCC 11 原生构建。
+以下命令由普通 `kickpi` 用户执行，不 sudo、不打开 VPU/disp：
+
+```sh
+cd /home/kickpi/projects/moonlight-embedded
+env -u LD_AUDIT -u LD_PRELOAD -u LD_LIBRARY_PATH \
+  -u CEDAR_K2B_KERNEL54_COMPAT -u K2B_CEDAR_RUNTIME_DIR \
+  sh tests/k2b/check_runtime_load.sh "$PWD" "$PWD/build/k2b-runtime-native/runtime"
+```
+
+负例在 `environment LD_LIBRARY_PATH` 门禁返回 EINVAL、ready=0，跟踪中没有
+Cedar 库打开。正例四个 blob 哈希通过，真实 `RTLD_NOW` 加载、符号来源检查
+及有返回值的 H.264 硬件插件注册通过；两次调用返回同一表、ready=1/error=0。
+唯一调用的内存 API 是 status：active/references/allocations/live_bytes/
+peak_bytes/pinned/quarantined/error 全为0，没有调用 begin、creator 或解码器。
+跟踪确认实际检查进程成功打开十个目标私有对象，没有设备打开或 ioctl。
+
+原生独立构建与顶层 ON 集成目录均完成上述负/正例；默认 OFF 的 Moonlight
+构建也通过。集成 load-check 的 DT_NEEDED 只有 libc 和系统动态链接器，
+没有 Cedar 库。Moonlight 本身没有运行，也尚未使用新函数表或注册 k2b 平台。
+启动 ID 仍为 `66ed4017-1fae-4b40-82ca-877d257b5175`，heap 设备仍不存在。
+
+规格审查及修正复审通过；质量审查和独立原生证据复核没有 Critical/Important
+问题。保留一个非阻塞限制：跟踪脚本直接匹配 strace 中的路径，带引号、反斜线
+或需转义字符的目录可能被误报为缺少打开记录。本次固定 ASCII 目录不受影响；
+未宣称任意 Linux 文件名均受支持。注册函数自身未检查 OOM 的依赖风险仍在。
+
+本机证据均位于忽略的 `build/k2b-cross/`：
+
+- `runtime-loader-pathfix-parent-20260924.log`，完整交叉与路径/输入/缓存负例，
+  SHA256 `f24a85c913986f1062d55da156945624837693089ddd01360ab3befef44cb30c`。
+- `runtime-loader-native-build-retry1-20260924.log`，源码同步和原生构建，
+  SHA256 `ebbbb9638f18b4e6031e06558ab03e92029329addecfbcf385055d870c342cc6`。
+- `runtime-loader-native-load-20260924.log`，独立目录原生加载，
+  SHA256 `46c41e355d0c0f3311211987404ef0c24f2b076fd3c49d34abda64a015bb5594`。
+- `runtime-loader-native-integrated-20260924.log`，OFF/ON 构建及集成目录加载，
+  SHA256 `7fe9f1a6c747368de79ee9990d066dc3a6cd99d8d4842372ca880e9a11f99366`。
+- `k2b-runtime-load.5QPkHn/negative.trace`，SHA256
+  `9390ab540f12dc5d839676c9456cc9860beec93bc40d33e3fb89925d9c4ba63d`。
+- `k2b-runtime-load.5QPkHn/positive.trace`，SHA256
+  `51c8daa129c4c3e196c2759c26fdcada3552f7997c2d5745f0306f203633db70`。
+
+两个原始运行目录 `build/k2b-runtime-load.5QPkHn`（独立）和
+`build/k2b-runtime-load.Xxl77K`（集成）均留在板端；各六个日志已复制到本机
+`build/k2b-cross/` 对应子目录。首次同步尝试曾在 SSH 认证前失败，未上传或
+执行程序；用户重连热点后恢复。失败日志没有被当成成功构建证据。
+
+此检查点只证明实际私有库加载/注册，不是硬件解码或显示通过。接下来使用
+函数表连接输入队列、内存会话和单线程解码；显示退役证据、真实动态 NV12
+和完整 1080p60 串流验收仍未完成。
