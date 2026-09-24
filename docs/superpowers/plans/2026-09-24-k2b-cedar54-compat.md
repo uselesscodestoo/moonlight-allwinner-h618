@@ -46,11 +46,11 @@ make -B -f tests/k2b/Makefile test-compat CC=cc CPPFLAGS=-DNDEBUG BUILD_DIR=buil
 
 ## Task 2：真实 ARM64 入口与私有构建
 
-- [ ] 汇编只支持 Linux AArch64 LP64，其他架构 #error；导出 ioctl，标记正确函数类型/size/非执行栈。尾调用固定分发函数，不在 C 中 va_arg，也不把传入寄存器变成其他参数。可添加 BTI 兼容提示与 CFI，不引入新依赖。隐藏 helper，不公开第二个绕过验证的公共 API。
-- [ ] CMake 在独立入口文件作用域启用 ASM；兼容库为 PIC、正确 SONAME、-z defs，C 源使用 -Wall -Wextra -Werror。无 Cedar 库依赖，不链接进 Moonlight 本体或原九库闭包；未来仅由显式私有启动入口 preload。默认 OFF 主构建无新增 ASM 需求。
-- [ ] 增加 preload 测试编译目标，链接 libc/libdl，无 Cedar 依赖，不在构建时运行。测试检查 dladdr(ioctl) 的实际提供库：--baseline 要确认 libc，显式库路径参数要与实际 provider 的 realpath 相同，不能因 LD_PRELOAD 被忽略而误通过。
-- [ ] 真实测试仅创建管道并写少量数据，验证 FIONREAD 指针、FIONBIO、FIOCLEX/FIONCLEX 双参数调用、带无关 raw_arg 的无参数请求、无效 fd 与不支持请求的错误、errno。不得 open Cedar/disp、请求时钟/寄存器或加载模块。资源结束时关闭。
-- [ ] preload 脚本参数 LIB TEST，使用绝对真实路径，清除外部 LD_PRELOAD/LD_AUDIT/LD_LIBRARY_PATH，运行 baseline、兼容 opt-in=0 和 opt-in=1 的 ABI 测试。它只支持原生 Linux AArch64；交叉构建脚本不调用它。先在板端观察“预加载库尚不存在/不是提供者”测试失败，再添加/验证真实汇编入口；不能使用另一个会假返回 ioctl 的测试共享库绕过。
+- [x] 汇编只支持 Linux AArch64 LP64，其他架构 #error；导出 ioctl，标记正确函数类型/size/非执行栈。尾调用固定分发函数，不在 C 中 va_arg，也不把传入寄存器变成其他参数。可添加 BTI 兼容提示与 CFI，不引入新依赖。隐藏 helper，不公开第二个绕过验证的公共 API。
+- [x] CMake 在独立入口文件作用域启用 ASM；兼容库为 PIC、正确 SONAME、-z defs，C 源使用 -Wall -Wextra -Werror。无 Cedar 库依赖，不链接进 Moonlight 本体或原九库闭包；未来仅由显式私有启动入口 preload。默认 OFF 主构建无新增 ASM 需求。
+- [x] 增加 preload 测试编译目标，链接 libc/libdl，无 Cedar 依赖，不在构建时运行。测试检查 dladdr(ioctl) 的实际提供库：--baseline 要确认 libc，显式库路径参数要与实际 provider 的 realpath 相同，不能因 LD_PRELOAD 被忽略而误通过。
+- [x] 真实测试仅创建管道并写少量数据，验证 FIONREAD 指针、FIONBIO、FIOCLEX/FIONCLEX 双参数调用、带无关 raw_arg 的无参数请求、无效 fd 与不支持请求的错误、errno。不得 open Cedar/disp、请求时钟/寄存器或加载模块。资源结束时关闭。
+- [x] preload 脚本参数 LIB TEST，使用绝对真实路径，清除外部 LD_PRELOAD/LD_AUDIT/LD_LIBRARY_PATH，运行 baseline、兼容 opt-in=0 和 opt-in=1 的 ABI 测试。它只支持原生 Linux AArch64；交叉构建脚本不调用它。先在板端观察“预加载库尚不存在/不是提供者”测试失败，再添加/验证真实汇编入口；不能使用另一个会假返回 ioctl 的测试共享库绕过。
 
 ```sh
 sh tests/k2b/check_cedar54_preload.sh \
@@ -58,8 +58,8 @@ sh tests/k2b/check_cedar54_preload.sh \
   /absolute/build/runtime/k2b_cedar54_preload_test
 ```
 
-- [ ] 交叉回归仍验证原九库，另检查兼容库为 ARM64、SONAME、ioctl 导出而 helper 不导出，且无 Cedar DT_NEEDED。不得新增 --allow-shlib-undefined。
-- [ ] 主执行者复跑本地普通/NDEBUG/ASan+UBSan 分发测试和板端原生 ABI 测试，核对最终反汇编。独立规格审查通过后质量审查，修复后再复核。
+- [x] 交叉回归仍验证原九库，另检查兼容库为 ARM64、SONAME、ioctl 导出而 helper 不导出，且无 Cedar DT_NEEDED。不得新增 --allow-shlib-undefined。
+- [x] 主执行者复跑本地普通/NDEBUG/ASan+UBSan 分发测试和板端原生 ABI 测试，核对最终反汇编。独立规格审查通过后质量审查，修复后再复核。
 
 ## 验证与风险边界
 
