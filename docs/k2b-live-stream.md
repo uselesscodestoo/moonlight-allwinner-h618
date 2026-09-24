@@ -133,6 +133,88 @@ Evidence: `k2b-live-audio-20260924.log`, `k2b-live-analog-20260924.log`,
 The user is arranging a more stable network. Do not restart board tests until
 that change is ready; recheck both endpoint IPs before the next live run.
 
+### Direct Ethernet follow-up (18:07–18:14)
+
+The user connected the board directly to the PC. DHCP provided board eth0
+192.168.137.73/24 and PC Ethernet 192.168.137.1/24; WLAN remained connected.
+`ip route get 192.168.137.1` selected eth0. Three pings measured 0.896–2.291 ms
+without loss. No network-sharing, firewall, or interface setting was changed
+by this test. The stream terminates on the PC's local Ethernet address, rather
+than requiring Internet-sharing NAT forwarding.
+
+The user's plain `aplay /usr/share/sounds/alsa/Front_Center.wav` had been audible.
+Default ALSA uses the user's PulseAudio server, whose AudioCodec-Playback sink
+opens hw:0,0. A 90-second 1080p60/15 Mbps run used ALSA `pulse` with the existing
+user server and cookie path supplied to the root process. Connection succeeded;
+the user confirmed picture and mouse, but no audio and noticeably higher latency.
+Measured window: 4978 decoded/display-submitted frames / 83.002 s = 59.974 fps.
+There was one startup network-drop event, no worker recovery, and 5 queued AUs
+discarded at normal shutdown. Video queue occupancy was usually 4–5 frames.
+Audio logged 370320 written frames and 8 recoveries; audibility did NOT pass.
+
+A 60-second comparison with `-audio null` measured 3180 frames / 53.033 s =
+59.963 fps, zero reported network drops and zero worker recoveries. Queue
+occupancy was mostly 0–2, with one logged 3; 2 pending AUs were discarded on
+shutdown. The user confirmed reduced latency. This is suggestive, not a causal
+latency measurement: startup backlog differed, and the first ffplay window had
+failed to auto-exit and overlapped the comparison. Both owned windows were
+explicitly closed afterwards. Software rates are NOT measured HDMI presentation
+rates. Both streams cleaned up; CMA free returned above 80 MiB.
+
+Plain board `aplay` of the same Front_Center sample during the null-audio stream
+was also inaudible according to the user. Another replay after stopping was
+performed; listening confirmation remains pending. PulseAudio reported a roughly
+683 ms configured sink latency during the local WAV test. A low audio write count
+also occurred with ALSA null, so write counts alone do not prove output blocking.
+No mixer or audio-server configuration was modified. Audio remains unresolved;
+the relationship between display operation and local audibility is unproven.
+
+Evidence: `k2b-wired-pulse-20260924.log`, `k2b-wired-null-20260924.log`,
+`k2b-wired-audio-idle-20260924.log` in `F:/temp/projects/`.
+
+### Completed wired duration test (18:15–18:26)
+
+Unchanged code at 766b513 ran H.264 / 1920x1080 / requested 60 fps / 15 Mbps
+with `-audio null` for 618.159 seconds of worker lifetime (620-second TERM
+timeout including setup). ALSA null discards playback; audio transport and
+decoding still run. A single owned ffplay testsrc2 1080p60 window supplied
+dynamic content. No builds, driver changes or audio configuration changes were
+performed during the run. The user confirmed the ongoing picture was always
+normal during the long test.
+
+Final received=36811, decoded=36806, display_submitted=36806, recoveries=0.
+The measured statistics window is 36538 decoded frames / 613.150 seconds =
+59.591 fps, not an exact sustained 60 fps pass. No network-drop log events were
+reported. Several intervals had lower received rates (roughly 53–58 fps), with
+correspondingly lower decode rates; these cannot be assigned to VPU throughput
+without further source/capture evidence. The host test process remained alive.
+
+Input queue occupancy initially stayed around 0–2, then reached 5–6 around seven
+minutes, before lower incoming rates drained it. Peak occupancy was 7; no queue
+overflow or reset occurred. Three pending AUs were discarded on normal shutdown.
+This reproduces persistent backlog without PulseAudio playback, so the earlier
+audio-on/off comparison does NOT establish audio as the cause of video latency.
+The worker currently gates decode as well as display submission on display
+retirement; separating preparation from safe display submission is a follow-up
+hypothesis, not an implemented or verified fix.
+
+Sampled CPU use was about 12.6–14.4% (ps process CPU), RSS 29356–29880 KiB,
+temperature 54–58 C and running CMA free about 42 MiB. Display importer cache
+stayed at 2 (max 3), composer skip stayed 0, manager err stayed 0 and historical
+output err=10/skip=79 did not change across samples. Ethernet RX errors stayed
+at the pre-existing 3. The captured new kernel log contains no IOMMU fault,
+Oops or crash. Shutdown completed, no moonlight process remained, boot ID was
+unchanged and CMA free returned to 78616 KiB. HDMI powered down after exit, as
+previously accepted. The file named `final-active` was actually sampled after
+automatic exit and must not be cited as an active-HDMI failure.
+
+The ten-minute connected-runtime test is now completed, with positive user
+visual feedback. Exact per-frame HDMI presentation and audio remain unverified;
+this does not satisfy every final acceptance requirement. Evidence is in
+`F:/temp/projects/k2b-wired-soak-20260924.log`,
+`k2b-wired-soak-summary-20260924.json`, `k2b-wired-soak-kernel-20260924.log`
+and the matching start/mid/five-minute/seven-minute/nine-minute/exit-state logs.
+
 ## Build / run on this board
 
 ```sh
@@ -145,7 +227,8 @@ cmake -S . -B build/k2b-integrated \
 cmake --build build/k2b-integrated -j4
 # After reboot, if this node does not exist:
 test -c /dev/cedar_test_heap || sudo insmod ~/projects/cedarx_test/module/cedar_test_heap.ko
-sudo sh tools/k2b-stream.sh 172.31.193.248
+# Current directly connected PC; discard playback while audio is unresolved:
+sudo sh tools/k2b-stream.sh 192.168.137.1 -audio null
 ```
 
 Use only the matching 5.4.125 exporter module. No system library installation or
