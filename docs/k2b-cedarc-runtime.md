@@ -84,7 +84,7 @@ file build/k2b-cross/check_cedar_abi
 保留 ENGINE_REQ → DMA 导入 → 显式 UNMAP → ENGINE_REL 顺序，并提供
 带分配大小/偏移的借用 fd 描述。网络输入要在回调返回前取得自有副本，
 再经有界队列送给受控的 CedarC 线程；不让 Moonlight 链节点悬空。
-计划中的 access_unit 模块只解决这一复制边界，不是完整队列或解码器。
+已实现的 access_unit 模块只解决这一复制边界，不是完整队列或解码器。
 
 显示持有/退役依然按 [disp 同步审计](k2b-disp-sync-audit.md) 的证据门槛
 推进；不能用结构 ABI 编译通过或码流复制单测替代实际 1080p60 验收。

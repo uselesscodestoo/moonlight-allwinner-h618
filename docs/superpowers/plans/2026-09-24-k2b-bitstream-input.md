@@ -40,9 +40,9 @@ int k2b_access_unit_copy(struct k2b_access_unit *out, void *storage,
 4 MiB 是当前输入上限，与探针 VBV 配置一致，不声称支持任意大码流帧。
 失败后调用者决定 DR_NEED_IDR/队列策略；本层不调用网络或 CedarC API。
 
-- [ ] 写显式计数测试和可编译拒绝桩，先确认有效单片/P 帧、SPS+PPS+IDR
+- [x] 写显式计数测试和可编译拒绝桩，先确认有效单片/P 帧、SPS+PPS+IDR
   多片失败；随后实现。测试不使用 assert，不 mock 设备。
-- [ ] 完整验证成功后才 memcpy；输出元数据/存储失败均不变。
+- [x] 完整验证成功后才 memcpy；输出元数据/存储失败均不变。
   核心实现按以下顺序，头文件保护和必要 includes 按 C99 补齐：
 
 ```c
@@ -82,14 +82,14 @@ return K2B_AU_OK;
 遍历后因超出 fullLength 被拒绝。仅验证容器和声明的 H.264/SDR 类型，
 不解析 NAL 内容，不重新生成起始码，不把它称为 H.264 语法验证器。
 
-- [ ] 测试逐字节一致、guard 区不变、复制后修改源不影响副本、元数据
+- [x] 测试逐字节一致、guard 区不变、复制后修改源不影响副本、元数据
   0/MAX 边界；4 MiB 成功/加 1 拒绝；NULL、0/负长、空链、空数据、
   0/负片长、和大于/小于 fullLength、INT_MAX 片长、链成环、HDR、
   2020/未知颜色、未知帧类型、VPS/未知片类型、PTS 超 INT64_MAX、
   容量 0/差 1，均检查失败不写。错误出现在后续片也不能先复制前片。
-- [ ] `test-au` 使用固定子模块 include，无厂商依赖，产物放 build/。
+- [x] `test-au` 使用固定子模块 include，无厂商依赖，产物放 build/。
   原 test/test-disp 保持可运行。普通/NDEBUG 使用 -B 强制重建。
-- [ ] Linux 原生普通/NDEBUG/ASan+UBSan 运行；AArch64 编译但不执行。
+- [x] Linux 原生普通/NDEBUG/ASan+UBSan 运行；AArch64 编译但不执行。
   独立规格审查后再质量审查，提交五文件内的实际变更。
 
 ## Task 2：真实 CedarC ABI 编译检查
@@ -114,12 +114,12 @@ typedef char k2b_veself_offset[(offsetof(VConfig, pVeOpsSelf) == 160) ? 1 : -1];
 int main(void) { return 0; }
 ```
 
-- [ ] 先在错误 TINA_LINUX_SUPPORT=1/宿主架构上确认失败，再用真实
+- [x] 先在错误 TINA_LINUX_SUPPORT=1/宿主架构上确认失败，再用真实
   AArch64 gcc、TINA_LINUX_SUPPORT=0 编译成功，不运行目标 ELF。
-- [ ] 外部 include：libcedarc-tina/include、base/include 及
+- [x] 外部 include：libcedarc-tina/include、base/include 及
   base/include/gralloc_metadata；按真实头文件依赖补入必要目录。
   用 readelf/file 核对目标架构。同时交叉编译已有 frame/disp 配置测试。
-- [ ] 更新 docs/k2b-bringup.md 和此清单，明确编译成功不能证明
+- [x] 更新 docs/k2b-bringup.md 和此清单，明确编译成功不能证明
   库加载、内核 ioctl ABI、生产内存层或实际解码/显示正确。
 
 ## 自检
@@ -127,3 +127,19 @@ int main(void) { return 0; }
 计划覆盖批准设计的码流拼接和固定 ABI 前置条件；未覆盖项仍明确保留。
 与显示同步调查独立，不因主机单测通过而打开持续显示，也不导出可选
 k2b 平台来掩盖后端尚未接好的事实。
+
+## 执行结果
+
+`81fd00a` 提交固定核心库清单、ELF 依赖记录及 AArch64 编译 ABI 检查。
+四个核心库哈希与固定归档一致；错误 TINA 宏、错误宿主架构负例均拒绝，
+正确配置编译成功。新增检查本身不加载任何 CedarC 运行库。
+
+`7f6d0a6` 提交完整帧复制：拒绝桩 11/189 检查按预期失败，实现后 272
+检查通过。Windows、Linux 普通/NDEBUG 均通过；主执行者在提交后重跑
+Linux 59/272/396 项布局/码流/配置检查及三组 ASan/UBSan，均通过。
+四个测试/ABI 程序已交叉编译为 ARM aarch64 ELF，但未执行目标程序。
+
+独立规格审查、随后独立质量审查通过，无遗留发现。原始分支保持
+`4e870a2` 且工作区干净。开发板未连接、未同步、未运行新代码。
+完整后端目标保持未完成：下一步仍需有界队列、受控解码线程、生产
+内存与运行库接入、显式平台回调及已证明的显示持有/退役协议。

@@ -161,3 +161,42 @@ DMA-BUF 退役。未改变内核、桌面、自启动或原有后端。
 ELF 依赖、真实头文件的 AArch64 结构 ABI 检查及剩余生产接入限制。
 ABI 正例编译通过；错误 TINA 宏或 x86_64 目标均被编译期拒绝。
 这不等价于 Moonlight 已加载新运行库，也不等价于板端通过新后端回归。
+
+## Moonlight 完整码流帧边界
+
+实现提交 `7f6d0a6` 增加 `src/video/k2b/access_unit.{h,c}`，直接使用
+固定 moonlight-common-c 的 `DECODE_UNIT` / `LENTRY`。
+`k2b_access_unit_copy()` 验证整条碎片链后，才复制到调用者提供的存储。
+它保留 SPS/PPS/图像片的原始压缩字节、帧号与时间信息，复制成功后不再
+依赖源链存活；不是解码像素复制，也不进行 NAL 解析或格式转换。
+
+当前输入上限 4 MiB，限定声明为 H.264/SDR 路径可接受的容器类型与
+Rec.601/709。非法输入返回 INVALID；完整验证后发现容量不足则返回
+NO_SPACE。两种失败都不修改目标存储或输出元数据，回调层后续负责
+丢帧/关键帧策略。源指针可读、目标实际容量及稳定/不重叠由调用者保证。
+
+拒绝桩阶段 189 项已执行检查中 11 项按预期失败（成功复制与容量错误
+尚未实现）；真实实现运行 272 项通过。Windows 与 WSL Linux 的普通/
+NDEBUG 构建均通过，Linux ASan/UBSan 同样通过；AArch64 只编译未执行。
+这不是已经接好的线程队列、CedarC 解码器或 Moonlight 视频回调。
+
+从仓库根运行（Linux，无厂商头文件即可测码流复制）：
+
+```sh
+make -B -f tests/k2b/Makefile test-au CC=cc BUILD_DIR=build/k2b-linux
+make -B -f tests/k2b/Makefile test-au CC=cc \
+  BUILD_DIR=build/k2b-linux-ndebug CPPFLAGS=-DNDEBUG
+cc -std=c99 -O1 -g -Wall -Wextra -Werror \
+  -fsanitize=address,undefined -fno-omit-frame-pointer \
+  -Isrc/video/k2b -Ithird_party/moonlight-common-c/src \
+  tests/k2b/test_access_unit.c src/video/k2b/access_unit.c \
+  -o build/k2b-linux/test_access_unit_sanitize
+ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=halt_on_error=1 \
+  ./build/k2b-linux/test_access_unit_sanitize
+```
+
+在该提交上重新运行的 Linux 布局/码流/配置测试分别为 59/272/396 项，
+普通、NDEBUG、ASan/UBSan 都通过。日志位于本地忽略目录
+`build/k2b-linux/offline-input-20260924.log`，SHA256：
+`9eda7d2b3356d7d67f1fb8d4f6906b0a2e1bf8638ec7a481773ad4c361846707`。
+它不包含板端运行证据；开发板最后同步位置仍是此前记录的 `acfd079`。
